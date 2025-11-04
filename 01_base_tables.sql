@@ -1,205 +1,183 @@
 -- ============================================
--- Base Tables for Chat Analytics
+-- Base Tables for Chat Analytics - Redshift Schema
 -- ============================================
+-- KEY RELATIONSHIPS:
+-- - message_id: UNIQUE per message (PRIMARY KEY)
+-- - thread_id: NOT unique - many messages can belong to one thread (many-to-one)
+-- - CLASSIFIER: Glue classifier selects ONE tool from reasoning_steps[] per message
+-- REDSHIFT BEST PRACTICES:
+-- - Base tables store raw fact data only (no aggregations)
+-- - Materialized views handle all aggregations and analytics
+-- - DISTKEY: None (EVEN distribution) - thread_id has low cardinality (many messages per thread), not suitable for distribution
+-- - SORTKEY: event_timestamp first (time-series queries)
+-- - Appropriate encoding for each column type
 
--- 1. chat_sessions: Main session/thread level data
--- Contains only session-level metadata (from top-level and request_body)
--- REFACTORED: Optimized VARCHAR sizes, added event_date for better sort key performance
--- INTENT CLASSIFIER: user_query from request_body is analyzed for domain classification
--- LATENCY: Added request_timestamp for session-level latency analysis
-CREATE TABLE chat_sessions (
-    session_id VARCHAR(128) NOT NULL ENCODE zstd,  -- Optimized size, high compression
-    thread_id VARCHAR(128) NOT NULL ENCODE zstd,
-    event_timestamp TIMESTAMP NOT NULL ENCODE delta32k,
-    event_date DATE ENCODE zstd,  -- Populated in ETL as DATE(event_timestamp) for better sort key performance
-    request_timestamp TIMESTAMP ENCODE delta32k,  -- LATENCY: When user request was received (from request_body timestamp or @timestamp)
-    created_timestamp TIMESTAMP ENCODE delta32k,
-    response_id VARCHAR(128) ENCODE zstd,  -- FK to responses table (from response_body.id)
-    user_query VARCHAR(2000) ENCODE zstd,  -- INTENT CLASSIFIER INPUT: User query from request_body (analyzed for domain classification)
+-- 1. chat_messages: Main message/request level data
+-- Core fact table for individual chat messages
+-- RELATIONSHIP: Many messages can belong to one thread_id (many-to-one)
+CREATE TABLE chat_messages (
+    message_id VARCHAR(128) NOT NULL PRIMARY KEY,  -- UNIQUE: From _id.$oid (if available) OR generated from response_id OR thread_id+@timestamp - unique per message
+    thread_id VARCHAR(128) NOT NULL ENCODE zstd,  -- From JSON thread_id field (top-level or request_body.thread_id) - NOT unique, many messages per thread
+    event_timestamp TIMESTAMP NOT NULL ENCODE delta32k,  -- From @timestamp (top-level)
+    request_timestamp TIMESTAMP ENCODE delta32k,  -- From @timestamp - for latency calculation
+    response_timestamp TIMESTAMP ENCODE delta32k,  -- From response_body.created (Unix timestamp) - for latency calculation
+    created_timestamp TIMESTAMP ENCODE delta32k,  -- From response_body.created (Unix timestamp)
+    response_id VARCHAR(128) ENCODE zstd,  -- From response_body.id - unique per message
+    user_query VARCHAR(2000) ENCODE zstd,  -- From request_body.messages[0].content - input for intent classifier
+    domain_category VARCHAR(50) ENCODE bytedict,  -- From intent classifier analyzing user_query (Shopping, Booking, Entertainment, Work, Education, Finance) - SOURCE OF TRUTH
+    intent_type VARCHAR(30) ENCODE bytedict,  -- From intent classifier (Transactional, Informational, Social, Entertainment, Productivity)
+    classification_confidence DECIMAL(3,2) ENCODE delta32k,  -- Intent classifier confidence score (0.00-1.00)
     task_completed BOOLEAN ENCODE runlength,  -- Boolean benefits from runlength encoding
     task_completion_status VARCHAR(20) ENCODE bytedict,  -- Low cardinality: 'completed', 'failed', 'partial', 'in_progress', 'cancelled'
     task_completion_reason VARCHAR(500) ENCODE zstd,
+    -- Response metadata fields (frequently used in analytics)
+    finish_reason VARCHAR(20) ENCODE bytedict,  -- From response_body.choices[0].finish_reason - low cardinality: 'stop', 'length', 'content_filter', etc.
+    model VARCHAR(64) ENCODE bytedict,  -- From response_body.model - limited model names, low cardinality
+    response_type VARCHAR(30) ENCODE bytedict,  -- From response_body.type - low cardinality: 'end_of_stream', etc.
     insert_timestamp TIMESTAMP DEFAULT GETDATE() ENCODE delta32k,
     
-    DISTKEY(session_id),
-    SORTKEY(event_date, event_timestamp, thread_id)  -- REFACTORED: event_date first for date range queries, then timestamp
+    SORTKEY(event_timestamp, thread_id)
 )
 ENCODE AUTO;
 
-COMMENT ON TABLE chat_sessions IS 'Main session/thread level data. INTENT CLASSIFIER: user_query from request_body analyzed for domain classification. LATENCY: request_timestamp added for session-level latency tracking. REFACTORED: Optimized data types, added event_date, improved sort key. DISTKEY: session_id';
-
--- 1b. responses: Response content and metadata from AI
--- Contains all response_body fields needed for analytics (normalized approach)
--- REFACTORED: Optimized VARCHAR sizes, better encodings for low-cardinality fields
-CREATE TABLE responses (
-    response_id VARCHAR(128) NOT NULL ENCODE zstd,
-    session_id VARCHAR(128) NOT NULL ENCODE zstd,
-    thread_id VARCHAR(128) NOT NULL ENCODE zstd,
-    event_timestamp TIMESTAMP NOT NULL ENCODE delta32k,
-    event_date DATE ENCODE zstd,  -- Populated in ETL as DATE(event_timestamp) for better sort key performance
-    created_timestamp TIMESTAMP ENCODE delta32k, -- From response_body.created
-    response_content VARCHAR(65535) ENCODE zstd,  -- Changed from TEXT to VARCHAR(65535) for better compression control
-    finish_reason VARCHAR(20) ENCODE bytedict, -- Low cardinality: 'stop', 'length', 'content_filter', etc.
-    model VARCHAR(64) ENCODE bytedict,  -- Limited model names, low cardinality
-    status VARCHAR(20) ENCODE bytedict, -- Low cardinality: 'COMPLETED', 'FAILED', etc.
-    type VARCHAR(30) ENCODE bytedict, -- Low cardinality: 'end_of_stream', etc.
-    insert_timestamp TIMESTAMP DEFAULT GETDATE() ENCODE delta32k,
-    
-    DISTKEY(session_id),
-    SORTKEY(event_date, event_timestamp, thread_id)  -- REFACTORED: event_date first for date range queries
-)
-ENCODE AUTO;
-
-COMMENT ON TABLE responses IS 'AI response content and metadata. REFACTORED: Optimized data types, added event_date, improved sort key. DISTKEY: session_id';
+COMMENT ON TABLE chat_messages IS 'Main message/request level data. Core fact table storing raw message and response metadata. UNIQUENESS: message_id is PRIMARY KEY (unique per message). RELATIONSHIP: Many messages can belong to one thread_id (many-to-one). IMPORTANT: If _id.$oid not in JSON, generate message_id from response_id OR thread_id+@timestamp. DOMAIN CLASSIFICATION: domain_category (source of truth) from intent classifier analyzing user_query. RESPONSE FIELDS: finish_reason, model, response_type stored here (frequently used in analytics). Large response_content moved to message_response_content table (separate table for rarely accessed large content). LATENCY: request_timestamp and response_timestamp enable latency calculation. TASK STATUS: task_completion_status tracks message-level task status. ANALYTICS: Use materialized views for aggregations (daily stats, domain analytics, etc.). DISTKEY: None (EVEN distribution - thread_id not suitable due to low cardinality). SORTKEY: event_timestamp first (time-series queries)';
 
 -- 2. tool_usage: Individual tool call records (all types)
--- REFACTORED: Optimized VARCHAR sizes, better encodings for categorical fields
--- INTENT CLASSIFIER WORKFLOW: This is the source table for intent classification.
--- ETL uses tool_type and step_type to route records to either browser_automations or web_automations.
+-- Central fact table for all tool usage events
+-- CLASSIFIER: Glue classifier selects ONE tool from multiple reasoning_steps[] per message
 CREATE TABLE tool_usage (
-    tool_usage_id BIGINT IDENTITY(1,1),
-    session_id VARCHAR(128) NOT NULL ENCODE zstd,
-    thread_id VARCHAR(128) NOT NULL ENCODE zstd,
-    event_timestamp TIMESTAMP NOT NULL ENCODE delta32k,
-    event_date DATE NOT NULL ENCODE zstd,  -- Populated in ETL as DATE(event_timestamp) for better sort key performance
-    tool_type VARCHAR(30) NOT NULL ENCODE bytedict, -- Low cardinality: 'web_search', 'browser_tool_execution', 'agent_progress'
-    step_type VARCHAR(50) ENCODE bytedict, -- Low cardinality: 'ENTROPY_REQUEST', etc.
-    classification_target VARCHAR(30) ENCODE bytedict, -- INTENT CLASSIFIER OUTPUT: 'browser_automation', 'web_automation', 'web_search', 'none'
+    tool_usage_id BIGINT IDENTITY(1,1),  -- PRIMARY KEY: Unique per tool call event
+    message_id VARCHAR(128) NOT NULL UNIQUE ENCODE zstd,  -- FK to chat_messages.message_id - 1:1 relationship (one message = one tool selected by classifier)
+    thread_id VARCHAR(128) NOT NULL ENCODE zstd,  -- From JSON thread_id field - NOT unique, many messages per thread
+    event_timestamp TIMESTAMP NOT NULL ENCODE delta32k,  -- From @timestamp
+    tool_type VARCHAR(30) NOT NULL ENCODE bytedict,  -- From Glue classifier selection - ONE tool chosen from reasoning_steps[] - low cardinality: 'web_search', 'browser_tool_execution', 'agent_progress'
+    step_type VARCHAR(50) ENCODE bytedict,  -- From selected reasoning step - low cardinality: 'ENTROPY_REQUEST', 'SEARCH_BROWSER', etc.
+    classification_target VARCHAR(30) ENCODE bytedict,  -- Glue classifier routing output - 'browser_automation', 'web_automation', 'web_search', 'none'
     insert_timestamp TIMESTAMP DEFAULT GETDATE() ENCODE delta32k,
     
-    DISTKEY(session_id),
-    SORTKEY(event_date, tool_type, thread_id)  -- REFACTORED: tool_type before thread_id (more selective)
+    SORTKEY(event_timestamp, tool_type, thread_id)
 )
 ENCODE AUTO;
 
-COMMENT ON TABLE tool_usage IS 'All tool usage events from reasoning_steps array. INTENT CLASSIFIER: tool_type and step_type are used by intent classifier to determine classification_target. REFACTORED: Optimized data types and sort key. DISTKEY: session_id. ETL MUST populate event_date = DATE(event_timestamp)';
+COMMENT ON TABLE tool_usage IS 'Central fact table for all tool usage events from response_body.reasoning_steps[]. RELATIONSHIP: 1:1 with chat_messages.message_id (one message = one tool selected by classifier). CLASSIFIER: Glue classifier analyzes reasoning_steps[] array and selects ONE tool based on priority (ENTROPY_REQUEST actions take precedence). If multiple tools exist (e.g., web_search + browser_tool_execution), classifier chooses the PRIMARY one. ROUTING: tool_type and step_type determine classification_target and routing to specialized tables. ANALYTICS: Use materialized views for aggregations (daily tool usage stats, etc.). DISTKEY: None (EVEN distribution - thread_id not suitable due to low cardinality). SORTKEY: event_timestamp first (time-series queries)';
 
 -- 3. web_searches: Web search operations
--- REFACTORED: Optimized VARCHAR sizes, better encodings
--- AGGREGATIONS: Counts and aggregations should be done in materialized views, not stored here
+-- Specialized fact table for search events
 CREATE TABLE web_searches (
-    search_id BIGINT IDENTITY(1,1),
-    tool_usage_id BIGINT NOT NULL ENCODE delta,
-    session_id VARCHAR(128) NOT NULL ENCODE zstd,
-    thread_id VARCHAR(128) NOT NULL ENCODE zstd,
-    event_timestamp TIMESTAMP NOT NULL ENCODE delta32k,
-    event_date DATE NOT NULL ENCODE zstd,  -- Populated in ETL as DATE(event_timestamp) for better sort key performance
-    search_type VARCHAR(20) ENCODE bytedict, -- Low cardinality: 'auto', 'manual', etc.
-    search_keywords VARCHAR(500) ENCODE zstd,  -- Changed from TEXT to VARCHAR with encoding
-    num_results INTEGER ENCODE delta,  -- Raw number of results from search response (not an aggregation)
+    search_id BIGINT IDENTITY(1,1),  -- PRIMARY KEY: Unique per search event
+    tool_usage_id BIGINT NOT NULL ENCODE delta,  -- FK to tool_usage.tool_usage_id
+    message_id VARCHAR(128) NOT NULL UNIQUE ENCODE zstd,  -- FK to chat_messages.message_id - 1:1 relationship (UNIQUE: one message = one search)
+    thread_id VARCHAR(128) NOT NULL ENCODE zstd,  -- From JSON thread_id field - NOT unique, many messages per thread
+    event_timestamp TIMESTAMP NOT NULL ENCODE delta32k,  -- From @timestamp
+    search_type VARCHAR(20) ENCODE bytedict,  -- From request_body.web_search_options.search_type - low cardinality: 'auto', 'manual', etc.
+    search_keywords VARCHAR(500) ENCODE zstd,  -- From reasoning_steps[i].web_search.search_keywords[] (join array with comma/space)
+    num_results INTEGER ENCODE delta,  -- Raw number from len(response_body.search_results) or request_body.num_search_results - NOT an aggregation, raw fact data
+    domain_category VARCHAR(50) ENCODE bytedict,  -- Denormalized from chat_messages.domain_category - for analytics without JOINs
     insert_timestamp TIMESTAMP DEFAULT GETDATE() ENCODE delta32k,
     
-    DISTKEY(session_id),
-    SORTKEY(event_date, search_type, thread_id)  -- REFACTORED: search_type before thread_id for better selectivity
+    SORTKEY(event_timestamp, search_type, thread_id)
 )
 ENCODE AUTO;
 
-COMMENT ON TABLE web_searches IS 'Web search operations. AGGREGATIONS: Counts and aggregations done in materialized views. REFACTORED: Optimized data types and sort key. DISTKEY: session_id. ETL MUST populate: event_date';
+COMMENT ON TABLE web_searches IS 'Web search operations. Specialized fact table for search events. RELATIONSHIP: 1:1 with chat_messages.message_id (one message = one search). CLASSIFIER: Only created when Glue classifier selects web_search as the PRIMARY tool from reasoning_steps[]. Many searches can belong to one thread_id (many-to-one). FIELD EXTRACTION: search_type from request_body.web_search_options.search_type, search_keywords from reasoning_steps[i].web_search.search_keywords[] (join array), num_results from response_body.search_results (raw data). DOMAIN CLASSIFICATION: domain_category denormalized from chat_messages (for analytics without JOINs). ANALYTICS: Use materialized views for aggregations (daily search stats, search counts by domain, etc.). DISTKEY: None (EVEN distribution - thread_id not suitable due to low cardinality). SORTKEY: event_timestamp first (time-series queries)';
 
--- 4. browser_automations: Browser tool execution actions
--- INTENT CLASSIFIER WORKFLOW: Records are routed here by intent classifier based on:
--- - tool_type = 'browser_tool_execution' → browser_automations
--- - Records come FROM tool_usage table AFTER classification
--- REFACTORED: Added event_date for consistent date queries, optimized data types
+-- 4. browser_automations: Browser tool execution actions (non-web actions)
+-- Specialized fact table for browser automation events
 CREATE TABLE browser_automations (
-    browser_action_id BIGINT IDENTITY(1,1),
-    tool_usage_id BIGINT NOT NULL ENCODE delta,  -- FK to tool_usage (after intent classification)
-    session_id VARCHAR(128) NOT NULL ENCODE zstd,
-    thread_id VARCHAR(128) NOT NULL ENCODE zstd,
-    event_timestamp TIMESTAMP NOT NULL ENCODE delta32k,
-    event_date DATE NOT NULL ENCODE zstd,  -- REFACTORED: Added for consistent date-based queries and sort key optimization
-    action_type VARCHAR(50) ENCODE bytedict, -- Extracted from browser_tool_execution, low cardinality
-    step_type VARCHAR(50) ENCODE bytedict, -- Low cardinality: 'ENTROPY_REQUEST'
-    user_id VARCHAR(128) ENCODE zstd, -- User identifier for analytics
-    classification_confidence DECIMAL(3,2) ENCODE delta32k, -- INTENT CLASSIFIER: Confidence score (0.00-1.00) if available
+    browser_action_id BIGINT IDENTITY(1,1),  -- PRIMARY KEY: Unique per browser action event
+    tool_usage_id BIGINT NOT NULL ENCODE delta,  -- FK to tool_usage.tool_usage_id
+    message_id VARCHAR(128) NOT NULL UNIQUE ENCODE zstd,  -- FK to chat_messages.message_id - 1:1 relationship (UNIQUE: one message = one browser action)
+    thread_id VARCHAR(128) NOT NULL ENCODE zstd,  -- From JSON thread_id field - NOT unique, many messages per thread
+    event_timestamp TIMESTAMP NOT NULL ENCODE delta32k,  -- From @timestamp
+    step_type VARCHAR(50) ENCODE bytedict,  -- From reasoning_steps[i].browser_tool_execution.tool.step_type - low cardinality: 'SEARCH_BROWSER', etc. (NOT 'ENTROPY_REQUEST')
+    domain_category VARCHAR(50) ENCODE bytedict,  -- Denormalized from chat_messages.domain_category - for analytics without JOINs
+    user_id VARCHAR(128) ENCODE zstd,  -- User identifier for analytics
     insert_timestamp TIMESTAMP DEFAULT GETDATE() ENCODE delta32k,
     
-    DISTKEY(session_id),
-    SORTKEY(event_date, action_type, thread_id)  -- REFACTORED: event_date first, action_type before thread_id for better selectivity
+    SORTKEY(event_timestamp, step_type, thread_id)
 )
 ENCODE AUTO;
 
-COMMENT ON TABLE browser_automations IS 'Browser automation actions. INTENT CLASSIFIER: Records routed here when tool_type=browser_tool_execution. REFACTORED: Added event_date, optimized data types and sort key. DISTKEY: session_id';
+COMMENT ON TABLE browser_automations IS 'Browser automation actions (non-web actions). Specialized fact table for browser tool execution events. RELATIONSHIP: 1:1 with chat_messages.message_id (one message = one browser action). CLASSIFIER: Only created when Glue classifier selects browser_tool_execution (with step_type != ENTROPY_REQUEST) as the PRIMARY tool from reasoning_steps[]. Many browser actions can belong to one thread_id (many-to-one). ROUTING: tool_type=browser_tool_execution AND step_type != ENTROPY_REQUEST (from response_body). Note: browser_tool_execution with step_type=ENTROPY_REQUEST routes to web_automations. FIELD EXTRACTION: step_type from reasoning_steps[i].browser_tool_execution.tool.step_type. DOMAIN CLASSIFICATION: domain_category denormalized from chat_messages (for analytics without JOINs). ANALYTICS: Use materialized views for aggregations (daily browser automation stats, etc.). DISTKEY: None (EVEN distribution - thread_id not suitable due to low cardinality). SORTKEY: event_timestamp first (time-series queries)';
 
--- 5. web_automations: Web automation actions (ENTROPY_REQUEST steps)
--- INTENT CLASSIFIER WORKFLOW: Records are routed here by intent classifier based on:
--- - tool_type = 'agent_progress' AND step_type = 'ENTROPY_REQUEST' → web_automations
--- - Records come FROM tool_usage table AFTER classification
--- DOMAIN CLASSIFICATION: domain_category populated by intent classifier based on user_query analysis
--- REFACTORED: Optimized VARCHAR sizes, better encodings for categorical fields
+-- 5. web_automations: Web automation actions (actual web interactions)
+-- Specialized fact table for web action events - critical for Goal 2 analytics
 CREATE TABLE web_automations (
-    web_action_id BIGINT IDENTITY(1,1),
-    tool_usage_id BIGINT NOT NULL ENCODE delta,  -- FK to tool_usage (after intent classification)
-    session_id VARCHAR(128) NOT NULL ENCODE zstd,
-    thread_id VARCHAR(128) NOT NULL ENCODE zstd,
-    event_timestamp TIMESTAMP NOT NULL ENCODE delta32k,
-    event_date DATE NOT NULL ENCODE zstd,  -- Populated in ETL as DATE(event_timestamp) for better sort key performance
-    action_type VARCHAR(50) ENCODE bytedict, -- Low cardinality: 'click', 'search', 'add_to_cart', etc. - REQUIRED for Goal 2 action analysis
-    domain_category VARCHAR(50) NOT NULL ENCODE bytedict, -- INTENT CLASSIFIER OUTPUT: From analyzing user_query in request_body (Shopping, Booking, Entertainment, Work, etc.) - NOT from domain_classifications lookup
-    domain_name VARCHAR(255) NOT NULL ENCODE zstd, -- Extracted from URL
-    task_status VARCHAR(30) ENCODE bytedict, -- Low cardinality: 'Succeeded', 'In Progress', 'Failed', etc.
-    task_completed BOOLEAN ENCODE runlength, -- Whether this specific task/action completed successfully
-    classification_confidence DECIMAL(3,2) ENCODE delta32k, -- INTENT CLASSIFIER: Confidence score (0.00-1.00) for domain classification
+    web_action_id BIGINT IDENTITY(1,1),  -- PRIMARY KEY: Unique per web action event
+    tool_usage_id BIGINT NOT NULL ENCODE delta,  -- FK to tool_usage.tool_usage_id
+    message_id VARCHAR(128) NOT NULL UNIQUE ENCODE zstd,  -- FK to chat_messages.message_id - 1:1 relationship (UNIQUE: one message = one web action)
+    thread_id VARCHAR(128) NOT NULL ENCODE zstd,  -- From JSON thread_id field - NOT unique, many messages per thread
+    event_timestamp TIMESTAMP NOT NULL ENCODE delta32k,  -- From @timestamp
+    domain_category VARCHAR(50) NOT NULL ENCODE bytedict,  -- Denormalized from chat_messages.domain_category - CRITICAL for Goal 2 analytics and sort key optimization
+    task_status VARCHAR(30) ENCODE bytedict,  -- From agent_progress.thought (if contains "Succeeded"/"Failed"/"In Progress") or infer from action='finished' - low cardinality
+    task_completed BOOLEAN ENCODE runlength,  -- TRUE if "Succeeded" in agent_progress.thought OR action='finished', FALSE otherwise
     insert_timestamp TIMESTAMP DEFAULT GETDATE() ENCODE delta32k,
     
-    DISTKEY(session_id),
-    SORTKEY(event_date, domain_category, action_type)  -- REFACTORED: domain_category before action_type (more selective)
+    SORTKEY(event_timestamp, domain_category)
 )
 ENCODE AUTO;
 
-COMMENT ON TABLE web_automations IS 'Web automation actions. INTENT CLASSIFIER: Records routed here when tool_type=agent_progress AND step_type=ENTROPY_REQUEST. DOMAIN CLASSIFICATION: domain_category from intent classifier based on user_query analysis. OPTIMIZED: Removed action_url (use domain_name instead - extracted during ETL). REFACTORED: Optimized data types and sort key. DISTKEY: session_id. ETL MUST populate domain_category, domain_name (from URL extraction), and event_date';
+COMMENT ON TABLE web_automations IS 'Web automation actions (actual web interactions). Specialized fact table for web action events - critical for Goal 2 analytics. RELATIONSHIP: 1:1 with chat_messages.message_id (one message = one web action). CLASSIFIER: Only created when Glue classifier selects browser_tool_execution (with step_type=ENTROPY_REQUEST) OR agent_progress (with step_type=ENTROPY_REQUEST) as the PRIMARY tool from reasoning_steps[]. Many web actions can belong to one thread_id (many-to-one). ROUTING: (tool_type=browser_tool_execution OR tool_type=agent_progress) AND step_type=ENTROPY_REQUEST (from response_body). FIELD EXTRACTION: domain_name from URL (agent_progress.url or browser_tool_execution.tool.content.tasks[0].start_url), task_status/task_completed from agent_progress.thought. DOMAIN CLASSIFICATION: domain_category denormalized from chat_messages (Shopping, Booking, etc.) - CRITICAL for Goal 2 analytics and sort key optimization. ANALYTICS: Use materialized views for aggregations (daily web action stats by domain, etc.). DISTKEY: None (EVEN distribution - thread_id not suitable due to low cardinality). SORTKEY: event_timestamp, domain_category (for Goal 2 analytics)';
 
 -- 6. usage_metrics: Token usage, cost, latency metrics
--- REFACTORED: Optimized VARCHAR sizes, better encodings for categorical fields
--- LATENCY: Added request_timestamp and response_timestamp for detailed latency analysis
+-- Fact table for usage and cost metrics
 CREATE TABLE usage_metrics (
-    metric_id BIGINT IDENTITY(1,1),
-    session_id VARCHAR(128) NOT NULL ENCODE zstd,
-    thread_id VARCHAR(128) NOT NULL ENCODE zstd,
-    event_timestamp TIMESTAMP NOT NULL ENCODE delta32k,
-    event_date DATE NOT NULL ENCODE zstd,  -- Populated in ETL as DATE(event_timestamp) for better sort key performance
-    request_timestamp TIMESTAMP ENCODE delta32k,  -- LATENCY: When request was sent to AI service (from request_body or system log)
-    response_timestamp TIMESTAMP ENCODE delta32k,  -- LATENCY: When response was received (from response_body.created or system log)
-    completion_tokens INTEGER ENCODE delta,
-    prompt_tokens INTEGER ENCODE delta,
-    total_tokens INTEGER ENCODE delta,
-    input_tokens_cost DOUBLE PRECISION ENCODE delta32k,
-    output_tokens_cost DOUBLE PRECISION ENCODE delta32k,
-    request_cost DOUBLE PRECISION ENCODE delta32k,
-    total_cost DOUBLE PRECISION ENCODE delta32k,
-    search_context_size VARCHAR(10) ENCODE bytedict, -- Low cardinality: 'low', 'medium', 'high'
-    latency_ms INTEGER ENCODE delta,  -- Pre-calculated latency (can be validated against timestamps)
-    model VARCHAR(64) ENCODE bytedict,  -- Limited model names, low cardinality
+    metric_id BIGINT IDENTITY(1,1),  -- PRIMARY KEY: Unique per usage metric event
+    message_id VARCHAR(128) ENCODE zstd,  -- FK to chat_messages.message_id - optional, for traceability
+    thread_id VARCHAR(128) NOT NULL ENCODE zstd,  -- From JSON thread_id field - NOT unique, many messages per thread
+    event_timestamp TIMESTAMP NOT NULL ENCODE delta32k,  -- From @timestamp
+    request_timestamp TIMESTAMP ENCODE delta32k,  -- From @timestamp - for latency calculation
+    response_timestamp TIMESTAMP ENCODE delta32k,  -- From response_body.created (Unix timestamp) - for latency calculation
+    completion_tokens INTEGER ENCODE delta,  -- From response_body.usage.completion_tokens - raw fact data
+    prompt_tokens INTEGER ENCODE delta,  -- From response_body.usage.prompt_tokens - raw fact data
+    total_tokens INTEGER ENCODE delta,  -- From response_body.usage.total_tokens - raw fact data
+    input_tokens_cost DOUBLE PRECISION ENCODE delta32k,  -- From response_body.usage.cost.input_tokens_cost - raw fact data
+    output_tokens_cost DOUBLE PRECISION ENCODE delta32k,  -- From response_body.usage.cost.output_tokens_cost - raw fact data
+    request_cost DOUBLE PRECISION ENCODE delta32k,  -- From response_body.usage.cost.request_cost - raw fact data
+    total_cost DOUBLE PRECISION ENCODE delta32k,  -- From response_body.usage.cost.total_cost - raw fact data
+    search_context_size VARCHAR(10) ENCODE bytedict,  -- From response_body.usage.search_context_size - low cardinality: 'low', 'medium', 'high'
+    latency_ms INTEGER ENCODE delta,  -- Pre-calculated latency (can be validated against timestamps) - raw fact data
+    model VARCHAR(64) ENCODE bytedict,  -- From response_body.model - limited model names, low cardinality
     insert_timestamp TIMESTAMP DEFAULT GETDATE() ENCODE delta32k,
     
-    DISTKEY(session_id),
-    SORTKEY(event_date, model, thread_id)  -- REFACTORED: model before thread_id for better selectivity
+    SORTKEY(event_timestamp, model, thread_id)
 )
 ENCODE AUTO;
 
-COMMENT ON TABLE usage_metrics IS 'Token usage, cost, and latency metrics. LATENCY: request_timestamp and response_timestamp enable detailed latency analysis, time-of-day patterns, and performance correlation with costs. REFACTORED: Optimized data types and sort key. DISTKEY: session_id. ETL MUST populate event_date, request_timestamp, and response_timestamp';
+COMMENT ON TABLE usage_metrics IS 'Token usage, cost, and latency metrics. Fact table for usage and cost metrics. RELATIONSHIP: Many metrics can belong to one thread_id (many-to-one). FIELD EXTRACTION: All fields from response_body.usage.* (completion_tokens, prompt_tokens, total_tokens, cost.*, search_context_size), latency_ms pre-calculated, model from response_body.model. LATENCY: request_timestamp and response_timestamp enable detailed latency analysis, time-of-day patterns, and performance correlation with costs. ANALYTICS: Use materialized views for aggregations (daily cost stats, token usage by model, cost by domain, etc.). DISTKEY: None (EVEN distribution - thread_id not suitable due to low cardinality). SORTKEY: event_timestamp first (time-series queries)';
 
 -- 7. domain_classifications: Domain categorization reference table
--- IMPORTANT: This is a REFERENCE table only, NOT used for lookup during ETL
--- Domain classification is done by intent classifier analyzing user_query from request_body
--- This table stores examples, patterns, and metadata for reference/training purposes
--- REFACTORED: Optimized VARCHAR sizes, better encodings for categorical fields
+-- Reference/lookup table for domain categories (training/examples only)
 CREATE TABLE domain_classifications (
-    domain_name VARCHAR(255) NOT NULL ENCODE zstd,  -- Domain name (optional, for reference only - classification is query-based)
-    domain_category VARCHAR(50) NOT NULL ENCODE bytedict, -- Category: 'Shopping', 'Booking', 'Entertainment', 'Work', 'Education', 'Finance'
-    subcategory VARCHAR(50) ENCODE bytedict, -- Low cardinality: 'E-commerce', 'Travel', 'Media', etc.
-    intent_type VARCHAR(30) ENCODE bytedict, -- Intent type: 'Transactional', 'Informational', 'Social', 'Entertainment', 'Productivity'
-    query_patterns VARCHAR(500) ENCODE zstd,  -- EXAMPLE query patterns that map to this category (for reference/training only)
+    domain_name VARCHAR(255) NOT NULL ENCODE zstd,  -- Domain name (for reference only - classification is query-based)
+    domain_category VARCHAR(50) NOT NULL ENCODE bytedict,  -- Category: 'Shopping', 'Booking', 'Entertainment', 'Work', 'Education', 'Finance'
+    subcategory VARCHAR(50) ENCODE bytedict,  -- Low cardinality: 'E-commerce', 'Travel', 'Media', etc.
+    intent_type VARCHAR(30) ENCODE bytedict,  -- Intent type: 'Transactional', 'Informational', 'Social', 'Entertainment', 'Productivity'
+    query_patterns VARCHAR(500) ENCODE zstd,  -- Example query patterns that map to this category (for reference/training only)
     is_active BOOLEAN DEFAULT TRUE ENCODE runlength,
     created_timestamp TIMESTAMP DEFAULT GETDATE() ENCODE delta32k,
     updated_timestamp TIMESTAMP DEFAULT GETDATE() ENCODE delta32k,
     
     DISTKEY(domain_name),
-    SORTKEY(domain_category, intent_type, domain_name)  -- REFACTORED: intent_type added for better filtering
+    SORTKEY(domain_category, intent_type, domain_name)
 )
 ENCODE AUTO;
 
-COMMENT ON TABLE domain_classifications IS 'Reference table for domain categories (training/examples only). DOMAIN CLASSIFICATION: Actual classification is done by intent classifier analyzing user_query from request_body (NOT via table lookup). This table stores example patterns and metadata for reference. Classification results are stored denormalized in web_automations.domain_category. REFACTORED: Optimized data types and sort key. DISTKEY: domain_name';
+COMMENT ON TABLE domain_classifications IS 'Reference table for domain categories (training/examples only). IMPORTANT: This is a REFERENCE table only, NOT used for lookup during ETL. Domain classification is done by intent classifier analyzing user_query from request_body (NOT via table lookup). This table stores example patterns and metadata for reference. Classification results are stored denormalized in chat_messages.domain_category and web_automations.domain_category. ANALYTICS: Use materialized views for aggregations if needed. DISTKEY: domain_name (reference table, small size). SORTKEY: domain_category first (for filtering)';
+
+-- 8. message_response_content: Large response content storage (separate table for rarely accessed content)
+-- OPTIMIZATION: Separated from chat_messages to improve query performance when response_content is not needed
+-- REDSHIFT BEST PRACTICE: Large text fields stored separately to avoid reading them in columnar queries
+CREATE TABLE message_response_content (
+    message_id VARCHAR(128) NOT NULL PRIMARY KEY,  -- FK to chat_messages.message_id - 1:1 relationship
+    response_content VARCHAR(65535) ENCODE zstd,  -- From response_body.choices[0].message.content - large TEXT field (up to 65KB)
+    insert_timestamp TIMESTAMP DEFAULT GETDATE() ENCODE delta32k,
+    
+    SORTKEY(message_id)
+)
+ENCODE AUTO;
+
+COMMENT ON TABLE message_response_content IS 'Large response content storage. OPTIMIZATION: Separated from chat_messages to improve query performance. REDSHIFT BEST PRACTICE: Large text fields (response_content) stored in separate table to avoid reading them in columnar queries when not needed. RELATIONSHIP: 1:1 with chat_messages.message_id. USE CASE: Only query this table when you need the actual response text content. For analytics queries, use chat_messages table which contains metadata (finish_reason, model, response_type) without the large content field. This reduces I/O and improves query performance for most analytics use cases.';
 
 -- Sample domain classifications
 INSERT INTO domain_classifications (domain_name, domain_category, subcategory, intent_type) VALUES
@@ -210,4 +188,3 @@ INSERT INTO domain_classifications (domain_name, domain_category, subcategory, i
 ('developers.kakao.com', 'Work', 'Developer Tools', 'Informational'),
 ('www.google.com', 'Work', 'Search', 'Informational'),
 ('www.youtube.com', 'Entertainment', 'Media', 'Entertainment');
-
