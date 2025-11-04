@@ -1,0 +1,121 @@
+{
+    "@timestamp": 1760945530.76794,
+    "request_body": {
+        "_debug_pro_search": false,
+        "browser_history": [
+            {
+                "last_visit_ts": 1760592415329.87,
+                "title": "",
+                "url": "https://athena-dev.internet.apps.samsung.com/index.html?q=%25EB%2582%25A0%25EC%2594%25A8%2520%25EC%2596%25B4%25EB%2595%258C",
+                "visit_count": 1
+            },
+            {
+                "last_visit_ts": 1760591241565.84,
+                "title": "최태원-노소영 재산분할, 대법 깨져 2심 다시…盧비자금 불인정(종합)",
+                "url": "https://n.news.naver.com/mnews/article/001/0015681677?rc=N&ntype=RANKING",
+                "visit_count": 1
+            },
+            {
+                "last_visit_ts": 1760591238062.31,
+                "title": "연합뉴스 속보 홈 : 네이버 뉴스",
+                "url": "https://news.naver.com/main/list.naver?mode=LPOD&mid=sec&sid1=001&sid2=140&oid=001&isYeonhapFlash=Y&aid=0015681677",
+                "visit_count": 1
+            },
+            {
+                "last_visit_ts": 1760591233313.87,
+                "title": "NAVER",
+                "url": "https://www.naver.com",
+                "visit_count": 1
+            },
+            {
+                "last_visit_ts": 1760589972960.99,
+                "title": "athena-dev.internet.apps.samsung.com/index.html?side=true&q=%25EB%2582%25A0%25EC%2594%25A8%2520%25EC%2596%25B4%25EB%2595%258C",
+                "url": "https://athena-dev.internet.apps.samsung.com/index.html?side=true&q=%25EB%2582%25A0%25EC%2594%25A8%2520%25EC%2596%25B4%25EB%2595%258C",
+                "visit_count": 1
+            }
+        ],
+        "has_image_url": false,
+        "media_response": {
+            "enable_media_classifier": true
+        },
+        "messages": [
+            {
+                "content": "현재 보고 있는 창에 대해서 요약해줘",
+                "role": "user"
+            }
+        ],
+        "model": "sonar-pro",
+        "num_images": 3,
+        "num_search_results": 3,
+        "stream": true,
+        "stream_mode": "full",
+        "thread_id": "a96429e0-3fd5-4036-836f-1dc419820577",
+        "use_threads": true,
+        "web_search_options": {
+            "search_type": "auto"
+        }
+    },
+    "response_body": {
+        "choices": [
+            {
+                "delta": {
+                    "\r\nrole": "assistant",
+                    "content": ""
+                },
+                "finish_reason": "stop",
+                "index": 0,
+                "message": {
+                    "content": "## 네이버(www.naver.com) 창 요약\n\n네이버는 대한민국을 대표하는 포털 사이트로, 다양한 정보를 한 곳에서 제공하는 종합 인터넷 플랫폼입니다.\n\n### 주요 특징 및 서비스\n\n- **통합 검색**  \n  웹, 뉴스, 블로그, 이미지, 동영상, 쇼핑 등 다양한 정보를 한 번에 검색할 수 있습니다.\n\n- **뉴스 및 실시간 트렌드**  \n  뉴스, 실시간 검색어, 연예, 스포츠 등 각종 최신 정보를 제공합니다.\n\n- **커뮤니티 및 정보 공유**  \n  블로그, 카페, 지식iN 등에서 사용자들의 정보 교류와 소통이 활발하게 이루어집니다.\n\n- **쇼핑 및 생활 서비스**  \n  네이버 쇼핑, 스마트스토어, 지도, 캘린더, 메일, 클라우드(MYBOX) 등 생활과 업무에 필요한 다양한 서비스가 통합 제공됩니다.\n\n- **홈페이지 구조**  \n  상단에 통합 검색창과 주요 메뉴(뉴스, 쇼핑, 블로그 등), 중단에는 주요 뉴스·인기 콘텐츠·날씨 등 실생활에 유용한 정보가 배치되어 있습니다[1][2].\n\n### 네이버의 위상\n\n- 대한민국에서 가장 널리 사용되는 포털 사이트이며, 월간 국내 앱 사용자 수가 4,400만 명에 이를 만큼 대중적입니다.\n- 다양한 연령과 목적의 사용자가 정보를 찾거나 소통, 쇼핑, 생활서비스 이용 등 인터넷 활동을 종합적으로 처리할 수 있습니다[2].\n\n---\n\n네이버는 일상생활과 업무 모두를 편리하게 지원하는 맞춤형 인터넷 허브 역할을 하고 있습니다.\n\n[1][2]",
+                    "reasoning_steps": [
+                        {
+                            "browser_tool_execution": {
+                                "tool": {
+                                    "content": {
+                                        "browser_content_sources": [
+                                            "OPEN_TAB"
+                                        ],
+                                        "extra_headers": "{\"X-Request-ID\": null, \"x-datadog-trace-id\": \"5888813213659371709\", \"x-datadog-parent-id\": \"8130166300041145206\", \"x-datadog-sampling-priority\": \"0\", \"x-datadog-tags\": \"_dd.p.dm=-1,_dd.p.tid=68f5e56500000000\", \"traceparent\": \"00-68f5e5650000000051b9446ae4cb18bd-70d4272ca6cdeb76-00\", \"tracestate\": \"dd=p:70d4272ca6cdeb76;s:0;t.dm:-1;t.tid:68f5e56500000000\"}",
+                                        "goal_id": "",
+                                        "max_results": 1,
+                                        "queries": [
+                                            "active tabs"
+                                        ]
+                                    },
+                                    "step_type": "SEARCH_BROWSER",
+                                    "uuid": "9f9ea3b7-5c68-4121-b6ae-ab9531a4bffa"
+                                }
+                            },
+                            "thought": "",
+                            "type": "browser_tool_execution"
+                        }
+                    ],
+                    "role": "assistant"
+                }
+            }
+        ],
+        "created": 1760945530,
+        "id": "fff13f42-c1ff-4a52-97d3-ed3112885283",
+        "model": "sonar-pro",
+        "object": "chat.completion.done",
+        "search_results": [
+        ],
+        "status": "COMPLETED",
+        "thread_id": "a96429e0-3fd5-4036-836f-1dc419820577",
+        "type": "end_of_stream",
+        "usage": {
+            "completion_tokens": 398,
+            "cost": {
+                "input_tokens_cost": 0,
+                "output_tokens_cost": 0.006,
+                "request_cost": 0.006,
+                "total_cost": 0.012
+            },
+            "prompt_tokens": 12,
+            "search_context_size": "low",
+            "total_tokens": 410
+        }
+    },
+    "room_id": "",
+    "thread_id": "a96429e0-3fd5-4036-836f-1dc419820577",
+    "timestamp": "2025-10-20T07:32:10+00:00"
+}
