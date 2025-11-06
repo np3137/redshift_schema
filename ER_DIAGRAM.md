@@ -20,18 +20,19 @@ erDiagram
         VARCHAR response_id
         VARCHAR user_query "Intent Classifier Input"
         VARCHAR domain "Source of Truth - Intent Classifier Output"
-        VARCHAR subdomain "Source of Truth - Multiple intents comma-separated"
         VARCHAR tool_type "Denormalized from tool_usage"
         BOOLEAN task_completed
         VARCHAR task_completion_status
         VARCHAR finish_reason
         VARCHAR model
         VARCHAR response_type
+        TIMESTAMP insert_timestamp
     }
     
     message_response_content {
         VARCHAR message_id PK "1:1 with chat_messages"
         VARCHAR response_content "Large TEXT field (up to 65KB)"
+        TIMESTAMP insert_timestamp
     }
     
     %% Intent Classifier Source
@@ -54,7 +55,7 @@ erDiagram
         VARCHAR search_keywords
         INTEGER num_results
         VARCHAR domain "Denormalized from chat_messages"
-        VARCHAR subdomain "Denormalized - Multiple intents comma-separated"
+        VARCHAR subdomain "Multiple intents comma-separated"
     }
     
     browser_automations {
@@ -63,7 +64,7 @@ erDiagram
         VARCHAR message_id UNIQUE "1:1 with chat_messages"
         TIMESTAMP event_timestamp "Sort Key"
         VARCHAR domain "Denormalized from chat_messages"
-        VARCHAR subdomain "Denormalized - Multiple intents comma-separated"
+        VARCHAR subdomain "Multiple intents comma-separated"
     }
     
     web_automations {
@@ -72,7 +73,7 @@ erDiagram
         VARCHAR message_id UNIQUE "1:1 with chat_messages"
         TIMESTAMP event_timestamp "Sort Key"
         VARCHAR domain "Denormalized - CRITICAL for Goal 2"
-        VARCHAR subdomain "Denormalized - Multiple intents comma-separated"
+        VARCHAR subdomain "Multiple intents comma-separated"
     }
     
     %% Related Data Tables
@@ -93,6 +94,7 @@ erDiagram
         VARCHAR search_context_size
         INTEGER latency_ms
         VARCHAR model
+        TIMESTAMP insert_timestamp
     }
     
     %% Lookup Table
@@ -128,23 +130,23 @@ erDiagram
 
 ┌─────────────────────────────────────┐
 │        chat_messages                │ ◄───────┐
-│  ─────────────────────────────────  │         │
-│ PK message_id (UNIQUE)             │         │ One-to-Many
-│    room_id (many-to-one)          │         │
-│    thread_id (many-to-one)        │         │
-│    event_timestamp (Sort Key)     │         │
-│    request_timestamp              │         │
+│  ─────────────────────────────────  │         │ One-to-Many
+│ PK message_id (PRIMARY KEY)        │         │
+│    room_id (many-to-one)           │         │
+│    thread_id (many-to-one)         │         │
+│    event_timestamp (Sort Key)      │         │
+│    request_timestamp               │         │
 │    response_timestamp              │         │
 │    response_id                     │         │
 │    user_query (Intent Input)       │         │
 │    domain (Source of Truth)        │         │
-│    subdomain (Multiple intents)    │         │
 │    tool_type (Denormalized)        │         │
 │    task_completed                  │         │
 │    task_completion_status          │         │
 │    finish_reason                   │         │
 │    model                           │         │
 │    response_type                   │         │
+│    insert_timestamp                │         │
 └─────────────────────────────────────┘         │
          │                                        │
          │ 1:1                                    │
@@ -157,6 +159,7 @@ erDiagram
 │  ─────────────────────────────────  │
 │ PK message_id (1:1)                │
 │    response_content (Large TEXT)   │
+│    insert_timestamp                │
 └─────────────────────────────────────┘
 
          │ 1:1
@@ -221,6 +224,7 @@ erDiagram
 │    search_context_size             │
 │    latency_ms                      │
 │    model                           │
+│    insert_timestamp                │
 └─────────────────────────────────────┘
 
 ┌─────────────────────────────────────┐
@@ -299,14 +303,15 @@ erDiagram
             └─> subdomain = 'restaurant_info'
 
 5. STORAGE
-   ├─ INSERT INTO chat_messages (source of truth)
-   │   ├─ domain
-   │   └─ subdomain (comma-separated if multiple intents)
+   ├─ INSERT INTO chat_messages (source of truth for domain)
+   │   └─ domain (stored here)
    │
-   └─ DENORMALIZE to specialized tables
+   └─ INSERT INTO specialized tables (subdomain stored here)
        ├─ web_searches.domain, web_searches.subdomain
        ├─ browser_automations.domain, browser_automations.subdomain
        └─ web_automations.domain, web_automations.subdomain
+       Note: subdomain is calculated by intent classifier and stored
+       directly in specialized tables (not in chat_messages)
 ```
 
 ---
@@ -330,21 +335,24 @@ erDiagram
    - FK: `web_searches.tool_usage_id` → `tool_usage.tool_usage_id`
    - FK: `web_searches.message_id` → `chat_messages.message_id` (UNIQUE)
    - **Intent Classifier**: `classification_target = 'web_search'`
-   - **Domain/Subdomain**: Denormalized from `chat_messages` (supports multiple intents)
+   - **Domain**: Denormalized from `chat_messages.domain`
+   - **Subdomain**: Calculated by intent classifier, stored directly in `web_searches` (supports multiple intents as comma-separated)
 
 4. **tool_usage** → **browser_automations** (1:0..1)
    - One tool usage can result in one browser automation
    - FK: `browser_automations.tool_usage_id` → `tool_usage.tool_usage_id`
    - FK: `browser_automations.message_id` → `chat_messages.message_id` (UNIQUE)
    - **Intent Classifier**: `classification_target = 'browser_automation'`
-   - **Domain/Subdomain**: Denormalized from `chat_messages` (supports multiple intents)
+   - **Domain**: Denormalized from `chat_messages.domain`
+   - **Subdomain**: Calculated by intent classifier, stored directly in `browser_automations` (supports multiple intents as comma-separated)
 
 5. **tool_usage** → **web_automations** (1:0..1)
    - One tool usage can result in one web automation
    - FK: `web_automations.tool_usage_id` → `tool_usage.tool_usage_id`
    - FK: `web_automations.message_id` → `chat_messages.message_id` (UNIQUE)
    - **Intent Classifier**: `classification_target = 'web_automation'`
-   - **Domain/Subdomain**: Denormalized from `chat_messages` (CRITICAL for Goal 2, supports multiple intents)
+   - **Domain**: Denormalized from `chat_messages.domain` (CRITICAL for Goal 2)
+   - **Subdomain**: Calculated by intent classifier, stored directly in `web_automations` (supports multiple intents as comma-separated)
 
 6. **chat_messages** → **usage_metrics** (1:N, optional)
    - One message can have multiple usage metric records (optional FK)
@@ -377,12 +385,13 @@ erDiagram
   - `web_automations`: `SORTKEY(event_timestamp, domain)` (CRITICAL for Goal 2 analytics)
   - `usage_metrics`: `SORTKEY(event_timestamp, model, thread_id)`
   - `domain_classifications`: `SORTKEY(domain_category, intent_type, domain_name)`
+  - `message_response_content`: `SORTKEY(message_id)`
 
 ### Intent Classifier Integration:
 - **Source**: `tool_usage` table (all events stored here first) + `chat_messages.user_query`
 - **Classification Basis**: Based on `response_body`, `step_type`, and `tool` fields from JSON
 - **One Tool Per Message**: Classifier selects ONE tool per message (others discarded if multiple exist)
-- **Multiple Subdomains Per Message**: ONE tool_type can have MULTIPLE intents in a single message (stored as comma-separated values)
+- **Multiple Subdomains Per Message**: ONE tool_type can have MULTIPLE intents in a single message (stored as comma-separated values in specialized tables)
 - **Two-Stage Classification**:
   1. **Tool Routing**: Based on `tool_type` and `step_type` combination
      - `tool_type='web_search'` → `classification_target='web_search'` → `web_searches`
@@ -396,9 +405,10 @@ erDiagram
      - Outputs `domain` (e.g., 'Transactional', 'Informational', 'Entertainment', 'Productivity')
      - Outputs `subdomain` (e.g., 'food_order,delivery' for multiple intents, 'shopping', 'booking' for single intent)
      - **Multiple Intents Support**: Can identify and store multiple subdomain intents as comma-separated values (e.g., 'food_order,delivery')
-     - Stored in `chat_messages.domain` and `chat_messages.subdomain` (source of truth)
-     - Denormalized to specialized tables (`web_searches`, `browser_automations`, `web_automations`) for analytics without JOINs
-- **Tracking**: `classification_target` in `tool_usage`, `domain`/`subdomain` in `chat_messages` and specialized tables
+     - `domain` stored in `chat_messages.domain` (source of truth)
+     - `subdomain` stored directly in specialized tables (`web_searches`, `browser_automations`, `web_automations`) - NOT in `chat_messages`
+     - `domain` denormalized to specialized tables for analytics without JOINs
+- **Tracking**: `classification_target` in `tool_usage`, `domain` in `chat_messages` and specialized tables, `subdomain` in specialized tables only
 
 ---
 
@@ -406,7 +416,9 @@ erDiagram
 
 1. **Foreign Key Constraints**: Redshift doesn't enforce FK constraints, but relationships are maintained logically through ETL
 
-2. **Denormalization**: `domain` and `subdomain` are denormalized from `chat_messages` to specialized tables for better query performance (avoids JOINs)
+2. **Denormalization**: 
+   - `domain` is stored in `chat_messages` (source of truth) and denormalized to specialized tables for better query performance (avoids JOINs)
+   - `subdomain` is calculated by intent classifier and stored directly in specialized tables (NOT in `chat_messages`)
 
 3. **ETL Workflow**: Intent classifier runs before table inserts, routing data to appropriate tables based on `response_body`, `step_type`, and `tool`
 
@@ -414,9 +426,11 @@ erDiagram
 
 5. **One Tool Per Message**: Classifier selects ONE tool per message - if multiple tools exist in JSON, others are discarded
 
-6. **Multiple Subdomains Per Message**: ONE tool_type can have MULTIPLE intents in a single message - stored as comma-separated values in `subdomain` field (e.g., 'food_order,delivery')
+6. **Multiple Subdomains Per Message**: ONE tool_type can have MULTIPLE intents in a single message - stored as comma-separated values in `subdomain` field in specialized tables (e.g., 'food_order,delivery')
 
-7. **Source of Truth**: `chat_messages.domain` and `chat_messages.subdomain` are the source of truth, denormalized to specialized tables
+7. **Source of Truth**: 
+   - `chat_messages.domain` is the source of truth for domain
+   - `subdomain` is stored only in specialized tables (not in `chat_messages`)
 
 8. **Large Content Separation**: `message_response_content` separated from `chat_messages` for performance (Redshift best practice)
 
