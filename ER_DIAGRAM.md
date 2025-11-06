@@ -9,18 +9,17 @@ This document provides an Entity-Relationship diagram of the Redshift schema for
 
 ```mermaid
 erDiagram
-    %% Core Message Tables
     chat_messages {
-        VARCHAR message_id PK "UNIQUE per message - PRIMARY KEY"
-        VARCHAR room_id "Many messages per room (many-to-one)"
-        VARCHAR thread_id "Many messages per thread (many-to-one)"
-        TIMESTAMP event_timestamp "Sort Key"
+        VARCHAR message_id PK
+        VARCHAR room_id
+        VARCHAR thread_id
+        TIMESTAMP event_timestamp
         TIMESTAMP request_timestamp
         TIMESTAMP response_timestamp
         VARCHAR response_id
-        VARCHAR user_query "Intent Classifier Input"
-        VARCHAR domain "Source of Truth - Intent Classifier Output"
-        VARCHAR tool_type "Denormalized from tool_usage"
+        VARCHAR user_query
+        VARCHAR domain
+        VARCHAR tool_type
         BOOLEAN task_completed
         VARCHAR task_completion_status
         VARCHAR finish_reason
@@ -30,58 +29,55 @@ erDiagram
     }
     
     message_response_content {
-        VARCHAR message_id PK "1:1 with chat_messages"
-        VARCHAR response_content "Large TEXT field (up to 65KB)"
+        VARCHAR message_id PK
+        VARCHAR response_content
         TIMESTAMP insert_timestamp
     }
     
-    %% Intent Classifier Source
     tool_usage {
         BIGINT tool_usage_id PK
-        VARCHAR message_id UNIQUE "1:1 with chat_messages"
-        TIMESTAMP event_timestamp "Sort Key"
-        VARCHAR tool_type "Intent Classifier Input"
-        VARCHAR step_type "Intent Classifier Input"
-        VARCHAR classification_target "Intent Classifier Output"
+        VARCHAR message_id UNIQUE
+        TIMESTAMP event_timestamp
+        VARCHAR tool_type
+        VARCHAR step_type
+        VARCHAR classification_target
     }
     
-    %% Tool-Specific Tables (Created After Intent Classification)
     web_searches {
         BIGINT search_id PK
         BIGINT tool_usage_id FK
-        VARCHAR message_id UNIQUE "1:1 with chat_messages"
-        TIMESTAMP event_timestamp "Sort Key"
+        VARCHAR message_id UNIQUE
+        TIMESTAMP event_timestamp
         VARCHAR search_type
         VARCHAR search_keywords
         INTEGER num_results
-        VARCHAR domain "Denormalized from chat_messages"
-        VARCHAR subdomain "Multiple intents comma-separated"
+        VARCHAR domain
+        VARCHAR subdomain
     }
     
     browser_automations {
         BIGINT browser_action_id PK
         BIGINT tool_usage_id FK
-        VARCHAR message_id UNIQUE "1:1 with chat_messages"
-        TIMESTAMP event_timestamp "Sort Key"
-        VARCHAR domain "Denormalized from chat_messages"
-        VARCHAR subdomain "Multiple intents comma-separated"
+        VARCHAR message_id UNIQUE
+        TIMESTAMP event_timestamp
+        VARCHAR domain
+        VARCHAR subdomain
     }
     
     web_automations {
         BIGINT web_action_id PK
         BIGINT tool_usage_id FK
-        VARCHAR message_id UNIQUE "1:1 with chat_messages"
-        TIMESTAMP event_timestamp "Sort Key"
-        VARCHAR domain "Denormalized - CRITICAL for Goal 2"
-        VARCHAR subdomain "Multiple intents comma-separated"
+        VARCHAR message_id UNIQUE
+        TIMESTAMP event_timestamp
+        VARCHAR domain
+        VARCHAR subdomain
     }
     
-    %% Related Data Tables
     usage_metrics {
         BIGINT metric_id PK
-        VARCHAR message_id FK "Optional"
-        VARCHAR thread_id "Many metrics per thread (many-to-one)"
-        TIMESTAMP event_timestamp "Sort Key"
+        VARCHAR message_id FK
+        VARCHAR thread_id
+        TIMESTAMP event_timestamp
         TIMESTAMP request_timestamp
         TIMESTAMP response_timestamp
         INTEGER completion_tokens
@@ -97,25 +93,23 @@ erDiagram
         TIMESTAMP insert_timestamp
     }
     
-    %% Lookup Table
     domain_classifications {
-        VARCHAR domain_name PK "DISTKEY"
-        VARCHAR domain_category "Sort Key"
+        VARCHAR domain_name PK
+        VARCHAR domain_category
         VARCHAR subcategory
-        VARCHAR intent_type "Sort Key"
-        VARCHAR query_patterns "Reference only"
+        VARCHAR intent_type
+        VARCHAR query_patterns
         BOOLEAN is_active
         TIMESTAMP created_timestamp
         TIMESTAMP updated_timestamp
     }
     
-    %% Relationships
-    chat_messages ||--|| message_response_content : "1:1 has"
-    chat_messages ||--|| tool_usage : "1:1 has (message_id UNIQUE)"
-    tool_usage ||--o| web_searches : "routes_to (classification_target=web_search)"
-    tool_usage ||--o| browser_automations : "routes_to (classification_target=browser_automation)"
-    tool_usage ||--o| web_automations : "routes_to (classification_target=web_automation)"
-    chat_messages ||--o{ usage_metrics : "has (optional FK)"
+    chat_messages ||--|| message_response_content
+    chat_messages ||--|| tool_usage
+    tool_usage ||--o| web_searches
+    tool_usage ||--o| browser_automations
+    tool_usage ||--o| web_automations
+    chat_messages ||--o{ usage_metrics
 ```
 
 ---
