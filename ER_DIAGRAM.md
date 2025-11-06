@@ -10,98 +10,98 @@ This document provides an Entity-Relationship diagram of the Redshift schema for
 ```mermaid
 erDiagram
     chat_messages {
-        VARCHAR message_id PK
-        VARCHAR room_id
-        VARCHAR thread_id
-        TIMESTAMP event_timestamp
-        TIMESTAMP request_timestamp
-        TIMESTAMP response_timestamp
-        VARCHAR response_id
-        VARCHAR user_query
-        VARCHAR domain
-        VARCHAR tool_type
-        BOOLEAN task_completed
-        VARCHAR task_completion_status
-        VARCHAR finish_reason
-        VARCHAR model
-        VARCHAR response_type
-        TIMESTAMP insert_timestamp
+        string message_id PK
+        string room_id
+        string thread_id
+        datetime event_timestamp
+        datetime request_timestamp
+        datetime response_timestamp
+        string response_id
+        string user_query
+        string domain
+        string tool_type
+        boolean task_completed
+        string task_completion_status
+        string finish_reason
+        string model
+        string response_type
+        datetime insert_timestamp
     }
     
     message_response_content {
-        VARCHAR message_id PK
-        VARCHAR response_content
-        TIMESTAMP insert_timestamp
+        string message_id PK
+        string response_content
+        datetime insert_timestamp
     }
     
     tool_usage {
-        BIGINT tool_usage_id PK
-        VARCHAR message_id UNIQUE
-        TIMESTAMP event_timestamp
-        VARCHAR tool_type
-        VARCHAR step_type
-        VARCHAR classification_target
+        int tool_usage_id PK
+        string message_id UK
+        datetime event_timestamp
+        string tool_type
+        string step_type
+        string classification_target
     }
     
     web_searches {
-        BIGINT search_id PK
-        BIGINT tool_usage_id FK
-        VARCHAR message_id UNIQUE
-        TIMESTAMP event_timestamp
-        VARCHAR search_type
-        VARCHAR search_keywords
-        INTEGER num_results
-        VARCHAR domain
-        VARCHAR subdomain
+        int search_id PK
+        int tool_usage_id FK
+        string message_id UK
+        datetime event_timestamp
+        string search_type
+        string search_keywords
+        int num_results
+        string domain
+        string subdomain
     }
     
     browser_automations {
-        BIGINT browser_action_id PK
-        BIGINT tool_usage_id FK
-        VARCHAR message_id UNIQUE
-        TIMESTAMP event_timestamp
-        VARCHAR domain
-        VARCHAR subdomain
+        int browser_action_id PK
+        int tool_usage_id FK
+        string message_id UK
+        datetime event_timestamp
+        string domain
+        string subdomain
     }
     
     web_automations {
-        BIGINT web_action_id PK
-        BIGINT tool_usage_id FK
-        VARCHAR message_id UNIQUE
-        TIMESTAMP event_timestamp
-        VARCHAR domain
-        VARCHAR subdomain
+        int web_action_id PK
+        int tool_usage_id FK
+        string message_id UK
+        datetime event_timestamp
+        string domain
+        string subdomain
     }
     
     usage_metrics {
-        BIGINT metric_id PK
-        VARCHAR message_id FK
-        VARCHAR thread_id
-        TIMESTAMP event_timestamp
-        TIMESTAMP request_timestamp
-        TIMESTAMP response_timestamp
-        INTEGER completion_tokens
-        INTEGER prompt_tokens
-        INTEGER total_tokens
-        DOUBLE input_tokens_cost
-        DOUBLE output_tokens_cost
-        DOUBLE request_cost
-        DOUBLE total_cost
-        VARCHAR search_context_size
-        INTEGER latency_ms
-        VARCHAR model
-        TIMESTAMP insert_timestamp
+        int metric_id PK
+        string message_id FK
+        string thread_id
+        datetime event_timestamp
+        datetime request_timestamp
+        datetime response_timestamp
+        int completion_tokens
+        int prompt_tokens
+        int total_tokens
+        float input_tokens_cost
+        float output_tokens_cost
+        float request_cost
+        float total_cost
+        string search_context_size
+        int latency_ms
+        string model
+        datetime insert_timestamp
     }
     
     domain_classifications {
-        VARCHAR domain_name PK
-        VARCHAR domain_category
-        VARCHAR subcategory
-        VARCHAR intent_type
-        VARCHAR query_patterns
-        BOOLEAN is_active
-        TIMESTAMP created_timestamp
-        TIMESTAMP updated_timestamp
+        string domain_name PK
+        string domain_category
+        string subcategory
+        string intent_type
+        string query_patterns
+        boolean is_active
+        datetime created_timestamp
+        datetime updated_timestamp
     }
     
     chat_messages ||--|| message_response_content
