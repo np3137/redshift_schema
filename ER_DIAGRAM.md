@@ -1,7 +1,7 @@
 # Entity-Relationship (ER) Diagram
 ## Redshift Chat Analytics Schema
 
-This document provides an Entity-Relationship diagram of the Redshift schema for chat analytics, including the intent classifier workflow.
+This document provides an Entity-Relationship diagram of the Redshift schema for chat analytics, including the intent classifier workflow with domain/subdomain classification and support for multiple subdomains per message.
 
 ---
 
@@ -9,41 +9,36 @@ This document provides an Entity-Relationship diagram of the Redshift schema for
 
 ```mermaid
 erDiagram
-    %% Core Session Tables
-    chat_sessions {
-        VARCHAR session_id PK "DISTKEY"
-        VARCHAR thread_id
-        TIMESTAMP event_timestamp
-        DATE event_date "Sort Key"
-        TIMESTAMP created_timestamp
-        VARCHAR response_id FK
+    %% Core Message Tables
+    chat_messages {
+        VARCHAR message_id PK "UNIQUE per message - PRIMARY KEY"
+        VARCHAR room_id "Many messages per room (many-to-one)"
+        VARCHAR thread_id "Many messages per thread (many-to-one)"
+        TIMESTAMP event_timestamp "Sort Key"
+        TIMESTAMP request_timestamp
+        TIMESTAMP response_timestamp
+        VARCHAR response_id
         VARCHAR user_query "Intent Classifier Input"
+        VARCHAR domain "Source of Truth - Intent Classifier Output"
+        VARCHAR subdomain "Source of Truth - Multiple intents comma-separated"
+        VARCHAR tool_type "Denormalized from tool_usage"
         BOOLEAN task_completed
         VARCHAR task_completion_status
-        VARCHAR task_completion_reason
-    }
-    
-    responses {
-        VARCHAR response_id PK
-        VARCHAR session_id FK "DISTKEY"
-        VARCHAR thread_id
-        TIMESTAMP event_timestamp
-        DATE event_date "Sort Key"
-        TIMESTAMP created_timestamp
-        VARCHAR response_content
         VARCHAR finish_reason
         VARCHAR model
-        VARCHAR status
-        VARCHAR type
+        VARCHAR response_type
+    }
+    
+    message_response_content {
+        VARCHAR message_id PK "1:1 with chat_messages"
+        VARCHAR response_content "Large TEXT field (up to 65KB)"
     }
     
     %% Intent Classifier Source
     tool_usage {
         BIGINT tool_usage_id PK
-        VARCHAR session_id FK "DISTKEY"
-        VARCHAR thread_id
-        TIMESTAMP event_timestamp
-        DATE event_date "Sort Key"
+        VARCHAR message_id UNIQUE "1:1 with chat_messages"
+        TIMESTAMP event_timestamp "Sort Key"
         VARCHAR tool_type "Intent Classifier Input"
         VARCHAR step_type "Intent Classifier Input"
         VARCHAR classification_target "Intent Classifier Output"
@@ -52,53 +47,42 @@ erDiagram
     %% Tool-Specific Tables (Created After Intent Classification)
     web_searches {
         BIGINT search_id PK
-        BIGINT tool_usage_id FK "From tool_usage"
-        VARCHAR session_id FK "DISTKEY"
-        VARCHAR thread_id
-        TIMESTAMP event_timestamp
-        DATE event_date "Sort Key"
+        BIGINT tool_usage_id FK
+        VARCHAR message_id UNIQUE "1:1 with chat_messages"
+        TIMESTAMP event_timestamp "Sort Key"
         VARCHAR search_type
         VARCHAR search_keywords
         INTEGER num_results
-        INTEGER result_count
+        VARCHAR domain "Denormalized from chat_messages"
+        VARCHAR subdomain "Denormalized - Multiple intents comma-separated"
     }
     
     browser_automations {
         BIGINT browser_action_id PK
-        BIGINT tool_usage_id FK "From tool_usage (Intent: browser_tool_execution)"
-        VARCHAR session_id FK "DISTKEY"
-        VARCHAR thread_id
-        TIMESTAMP event_timestamp
-        DATE event_date "Sort Key"
-        VARCHAR action_type
-        VARCHAR step_type
-        VARCHAR user_id
-        DECIMAL classification_confidence
+        BIGINT tool_usage_id FK
+        VARCHAR message_id UNIQUE "1:1 with chat_messages"
+        TIMESTAMP event_timestamp "Sort Key"
+        VARCHAR domain "Denormalized from chat_messages"
+        VARCHAR subdomain "Denormalized - Multiple intents comma-separated"
     }
     
     web_automations {
         BIGINT web_action_id PK
-        BIGINT tool_usage_id FK "From tool_usage (Intent: agent_progress + ENTROPY_REQUEST)"
-        VARCHAR session_id FK "DISTKEY"
-        VARCHAR thread_id
-        TIMESTAMP event_timestamp
-        DATE event_date "Sort Key"
-        VARCHAR action_type
-        VARCHAR action_url
-        VARCHAR domain_category "Intent Classifier Output (from user_query)"
-        VARCHAR domain_name "Extracted from URL"
-        VARCHAR task_status
-        BOOLEAN task_completed
-        DECIMAL classification_confidence "Domain classification confidence"
+        BIGINT tool_usage_id FK
+        VARCHAR message_id UNIQUE "1:1 with chat_messages"
+        TIMESTAMP event_timestamp "Sort Key"
+        VARCHAR domain "Denormalized - CRITICAL for Goal 2"
+        VARCHAR subdomain "Denormalized - Multiple intents comma-separated"
     }
     
     %% Related Data Tables
     usage_metrics {
         BIGINT metric_id PK
-        VARCHAR session_id FK "DISTKEY"
-        VARCHAR thread_id
-        TIMESTAMP event_timestamp
-        DATE event_date "Sort Key"
+        VARCHAR message_id FK "Optional"
+        VARCHAR thread_id "Many metrics per thread (many-to-one)"
+        TIMESTAMP event_timestamp "Sort Key"
+        TIMESTAMP request_timestamp
+        TIMESTAMP response_timestamp
         INTEGER completion_tokens
         INTEGER prompt_tokens
         INTEGER total_tokens
@@ -114,24 +98,22 @@ erDiagram
     %% Lookup Table
     domain_classifications {
         VARCHAR domain_name PK "DISTKEY"
-        VARCHAR domain_category "Sort Key - Intent Classifier Output"
+        VARCHAR domain_category "Sort Key"
         VARCHAR subcategory
-        VARCHAR intent_type "Sort Key - Intent Classifier Output"
-        VARCHAR query_patterns "Example queries for reference"
+        VARCHAR intent_type "Sort Key"
+        VARCHAR query_patterns "Reference only"
         BOOLEAN is_active
         TIMESTAMP created_timestamp
         TIMESTAMP updated_timestamp
     }
     
     %% Relationships
-    chat_sessions ||--o| responses : "has"
-    chat_sessions ||--o{ tool_usage : "contains"
-    chat_sessions ||--o| web_automations : "user_query analyzed for domain_category"
-    tool_usage ||--o| web_searches : "classifies_to (tool_type=web_search)"
-    tool_usage ||--o| browser_automations : "classifies_to (tool_type=browser_tool_execution)"
-    tool_usage ||--o| web_automations : "classifies_to (tool_type=agent_progress AND step_type=ENTROPY_REQUEST)"
-    chat_sessions ||--o{ usage_metrics : "has"
-    domain_classifications ||--o{ web_automations : "reference_mapping"
+    chat_messages ||--|| message_response_content : "1:1 has"
+    chat_messages ||--|| tool_usage : "1:1 has (message_id UNIQUE)"
+    tool_usage ||--o| web_searches : "routes_to (classification_target=web_search)"
+    tool_usage ||--o| browser_automations : "routes_to (classification_target=browser_automation)"
+    tool_usage ||--o| web_automations : "routes_to (classification_target=web_automation)"
+    chat_messages ||--o{ usage_metrics : "has (optional FK)"
 ```
 
 ---
@@ -144,82 +126,119 @@ erDiagram
 │                         Entity-Relationship Diagram                      │
 └─────────────────────────────────────────────────────────────────────────┘
 
-┌─────────────────────┐
-│   chat_sessions     │ ◄───────┐
-│  ────────────────   │         │
-│ PK session_id       │         │ One-to-Many
-│    thread_id        │         │
-│    event_timestamp  │         │
-│    event_date       │         │
-│ FK response_id      │────┐    │
-│    task_completed   │    │    │
-└─────────────────────┘    │    │
-                           │    │
-┌─────────────────────┐    │    │
-│     responses       │    │    │
-│  ────────────────   │    │    │
-│ PK response_id      │◄────┘    │
-│ FK session_id      │           │
-│    thread_id        │           │
-│    response_content │           │
-│    model            │           │
-│    status           │           │
-└─────────────────────┘           │
-                                   │
-┌─────────────────────┐           │
-│    tool_usage       │◄──────────┘
-│  ────────────────   │
-│ PK tool_usage_id    │ ───────────────┐
-│ FK session_id       │                 │ Intent Classifier
-│    thread_id        │                 │ Routes based on:
-│    tool_type        │                 │ - tool_type
-│    step_type        │                 │ - step_type
-│    classification_  │                 │
-│      target         │                 │
-└─────────────────────┘                 │
-         │                               │
-         │                               │
-    ┌────┴────┬────────────┬────────────┘
+┌─────────────────────────────────────┐
+│        chat_messages                │ ◄───────┐
+│  ─────────────────────────────────  │         │
+│ PK message_id (UNIQUE)             │         │ One-to-Many
+│    room_id (many-to-one)          │         │
+│    thread_id (many-to-one)        │         │
+│    event_timestamp (Sort Key)     │         │
+│    request_timestamp              │         │
+│    response_timestamp              │         │
+│    response_id                     │         │
+│    user_query (Intent Input)       │         │
+│    domain (Source of Truth)        │         │
+│    subdomain (Multiple intents)    │         │
+│    tool_type (Denormalized)        │         │
+│    task_completed                  │         │
+│    task_completion_status          │         │
+│    finish_reason                   │         │
+│    model                           │         │
+│    response_type                   │         │
+└─────────────────────────────────────┘         │
+         │                                        │
+         │ 1:1                                    │
+         ├────────────────────────────────────────┘
+         │
+         │ 1:1
+         ▼
+┌─────────────────────────────────────┐
+│   message_response_content          │
+│  ─────────────────────────────────  │
+│ PK message_id (1:1)                │
+│    response_content (Large TEXT)   │
+└─────────────────────────────────────┘
+
+         │ 1:1
+         ▼
+┌─────────────────────────────────────┐
+│        tool_usage                   │ ───────────────┐
+│  ─────────────────────────────────  │                 │ Intent Classifier
+│ PK tool_usage_id                   │                 │ Routes based on:
+│    message_id UNIQUE (1:1)         │                 │ - tool_type
+│    event_timestamp (Sort Key)      │                 │ - step_type
+│    tool_type                        │                 │
+│    step_type                        │                 │
+│    classification_target            │                 │
+└─────────────────────────────────────┘                 │
+         │                                               │
+         │ Routes to specialized tables                  │
+         │                                               │
+    ┌────┴────┬────────────┬────────────────────────────┘
     │         │            │
     ▼         ▼            ▼
 ┌──────────┐ ┌──────────────┐ ┌──────────────┐
-│web_searches│ │browser_      │ │web_          │
-│            │ │automations   │ │automations   │
+│web_      │ │browser_      │ │web_          │
+│searches  │ │automations   │ │automations   │
 │──────────│ │──────────────│ │──────────────│
-│PK search_id│ │PK browser_   │ │PK web_action_│
-│FK tool_    │ │  action_id   │ │  id          │
-│  usage_id  │ │FK tool_usage_│ │FK tool_usage_│
-│    search_ │ │  id          │ │  id          │
-│    type    │ │    action_   │ │    action_   │
-│            │ │    type      │ │    type      │
-│            │ │    user_id   │ │    action_url│
-│            │ │              │ │    domain_   │
-│            │ │              │ │    category  │
+│PK search_│ │PK browser_   │ │PK web_action_│
+│  id      │ │  action_id   │ │  id          │
+│FK tool_  │ │FK tool_usage_│ │FK tool_usage_│
+│  usage_id│ │  id          │ │  id          │
+│FK message│ │FK message_id │ │FK message_id │
+│  _id     │ │  (UNIQUE)    │ │  (UNIQUE)    │
+│  (UNIQUE)│ │              │ │              │
+│    search│ │              │ │              │
+│    _type │ │              │ │              │
+│    search│ │              │ │              │
+│    _keyw │ │              │ │              │
+│    ords  │ │              │ │              │
+│    num_r │ │              │ │              │
+│    esults│ │              │ │              │
+│    domain│ │    domain    │ │    domain    │
+│    subdom│ │    subdomain  │ │    subdomain │
+│    ain   │ │    (multiple) │ │    (multiple)│
 └──────────┘ └──────────────┘ └──────────────┘
-┌─────────────────────┐
-│   usage_metrics     │
-│  ────────────────   │
-│ PK metric_id       │
-│ FK session_id      │
-│    total_tokens     │
-│    total_cost       │
-│    model            │
-└─────────────────────┘
+         │
+         │ Optional FK (many-to-one)
+         ▼
+┌─────────────────────────────────────┐
+│      usage_metrics                  │
+│  ─────────────────────────────────  │
+│ PK metric_id                       │
+│ FK message_id (Optional)           │
+│    thread_id (many-to-one)         │
+│    event_timestamp (Sort Key)      │
+│    request_timestamp               │
+│    response_timestamp              │
+│    completion_tokens                │
+│    prompt_tokens                    │
+│    total_tokens                     │
+│    input_tokens_cost               │
+│    output_tokens_cost              │
+│    request_cost                    │
+│    total_cost                      │
+│    search_context_size             │
+│    latency_ms                      │
+│    model                           │
+└─────────────────────────────────────┘
 
-┌─────────────────────┐
-│domain_              │
-│classifications      │
-│─────────────────────│
-│PK domain_name       │◄──────┐
-│    domain_category  │       │
-│    subcategory      │       │ Lookup Reference
-│    intent_type      │       │ (Used by ETL to
-│    is_active        │       │  populate domain_)
-└─────────────────────┘       │  category in:
-         │                     │  - web_automations
-         │                     │  - browser_history
-         │                     │  - search_results
-         └─────────────────────┘
+┌─────────────────────────────────────┐
+│  domain_classifications             │
+│  ─────────────────────────────────  │
+│ PK domain_name (DISTKEY)           │
+│    domain_category (Sort Key)     │
+│    subcategory                     │
+│    intent_type (Sort Key)          │
+│    query_patterns (Reference only) │
+│    is_active                       │
+│    created_timestamp               │
+│    updated_timestamp               │
+└─────────────────────────────────────┘
+         │
+         │ Reference Table (for training/examples)
+         │ NOT used for ETL classification
+         └─────────────────────────────────────┘
 ```
 
 ---
@@ -228,7 +247,8 @@ erDiagram
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    INTENT CLASSIFIER WORKFLOW                    │
+│                    INTENT CLASSIFIER WORKFLOW                  │
+│              (Multiple Subdomains Per Message Support)           │
 └─────────────────────────────────────────────────────────────────┘
 
 1. RAW DATA (from topic message)
@@ -241,98 +261,170 @@ erDiagram
    └─ tool_type = 'agent_progress'
         │
         ▼
-3. INTENT CLASSIFIER
+3. INTENT CLASSIFIER (Stage 1: Tool Routing)
    ├─ Input: tool_type + step_type
    ├─ Process: Classification logic
    └─ Output: classification_target
         │
         ├─ tool_type = 'web_search'
         │   └─> INSERT INTO web_searches
-        │       └─> INSERT INTO search_results (multiple rows)
         │
         ├─ tool_type = 'browser_tool_execution'
-        │   └─> INSERT INTO browser_automations
+        │   ├─ IF step_type = 'ENTROPY_REQUEST'
+        │   │   └─> INSERT INTO web_automations (actual web action)
+        │   └─ ELSE
+        │       └─> INSERT INTO browser_automations (browser tool execution)
         │
-        └─ tool_type = 'agent_progress' AND step_type = 'ENTROPY_REQUEST'
-            └─> INSERT INTO web_automations
-                └─> Lookup domain_classifications
-                    └─> Populate domain_category
+        └─ tool_type = 'agent_progress'
+            ├─ IF step_type = 'ENTROPY_REQUEST'
+            │   └─> INSERT INTO web_automations (actual web action)
+            └─ ELSE
+                └─> Stays in tool_usage only (planning/reasoning)
+
+4. INTENT CLASSIFIER (Stage 2: Domain/Subdomain Classification)
+   ├─ Input: user_query (from request_body.messages[0].content)
+   ├─ Process: Analyze user_query to identify intents
+   └─ Output: domain + subdomain (can be multiple intents)
+        │
+        ├─ Example: "order food and schedule delivery"
+        │   └─> domain = 'Transactional'
+        │   └─> subdomain = 'food_order,delivery' (multiple intents)
+        │
+        ├─ Example: "book a hotel room"
+        │   └─> domain = 'Transactional'
+        │   └─> subdomain = 'booking'
+        │
+        └─ Example: "search for restaurant reviews"
+            └─> domain = 'Informational'
+            └─> subdomain = 'restaurant_info'
+
+5. STORAGE
+   ├─ INSERT INTO chat_messages (source of truth)
+   │   ├─ domain
+   │   └─ subdomain (comma-separated if multiple intents)
+   │
+   └─ DENORMALIZE to specialized tables
+       ├─ web_searches.domain, web_searches.subdomain
+       ├─ browser_automations.domain, browser_automations.subdomain
+       └─ web_automations.domain, web_automations.subdomain
 ```
 
 ---
 
 ## Relationship Summary
 
-### One-to-Many Relationships:
+### Core Relationships:
 
-1. **chat_sessions** → **responses** (1:0..1)
-   - One session can have zero or one response
-   - FK: `chat_sessions.response_id` → `responses.response_id`
+1. **chat_messages** → **message_response_content** (1:1)
+   - One message has exactly one response content (or NULL)
+   - FK: `message_response_content.message_id` → `chat_messages.message_id` (PRIMARY KEY)
+   - **Best Practice**: Large content separated for performance
 
-2. **chat_sessions** → **tool_usage** (1:N)
-   - One session contains many tool usage events
-   - FK: `tool_usage.session_id` → `chat_sessions.session_id`
+2. **chat_messages** → **tool_usage** (1:1)
+   - One message has exactly one tool usage event (or NULL)
+   - FK: `tool_usage.message_id` → `chat_messages.message_id` (UNIQUE)
+   - **Key Rule**: Classifier selects ONE tool per message (others discarded if multiple exist)
 
 3. **tool_usage** → **web_searches** (1:0..1)
    - One tool usage can result in one web search
    - FK: `web_searches.tool_usage_id` → `tool_usage.tool_usage_id`
-   - **Intent Classifier**: `tool_type = 'web_search'`
+   - FK: `web_searches.message_id` → `chat_messages.message_id` (UNIQUE)
+   - **Intent Classifier**: `classification_target = 'web_search'`
+   - **Domain/Subdomain**: Denormalized from `chat_messages` (supports multiple intents)
 
 4. **tool_usage** → **browser_automations** (1:0..1)
    - One tool usage can result in one browser automation
    - FK: `browser_automations.tool_usage_id` → `tool_usage.tool_usage_id`
-   - **Intent Classifier**: `tool_type = 'browser_tool_execution'`
+   - FK: `browser_automations.message_id` → `chat_messages.message_id` (UNIQUE)
+   - **Intent Classifier**: `classification_target = 'browser_automation'`
+   - **Domain/Subdomain**: Denormalized from `chat_messages` (supports multiple intents)
 
 5. **tool_usage** → **web_automations** (1:0..1)
    - One tool usage can result in one web automation
    - FK: `web_automations.tool_usage_id` → `tool_usage.tool_usage_id`
-   - **Intent Classifier**: `tool_type = 'agent_progress' AND step_type = 'ENTROPY_REQUEST'`
+   - FK: `web_automations.message_id` → `chat_messages.message_id` (UNIQUE)
+   - **Intent Classifier**: `classification_target = 'web_automation'`
+   - **Domain/Subdomain**: Denormalized from `chat_messages` (CRITICAL for Goal 2, supports multiple intents)
 
-6. **chat_sessions** → **usage_metrics** (1:N)
-   - One session can have multiple usage metric records
-   - FK: `usage_metrics.session_id` → `chat_sessions.session_id`
+6. **chat_messages** → **usage_metrics** (1:N, optional)
+   - One message can have multiple usage metric records (optional FK)
+   - FK: `usage_metrics.message_id` → `chat_messages.message_id` (optional)
+   - Many metrics can belong to one thread_id (many-to-one relationship)
 
-### Lookup Relationships (via ETL):
+### Reference Table:
 
-7. **domain_classifications** → **web_automations** (lookup)
-   - Domain name lookup during ETL to populate `domain_category`
-   - Lookup: `web_automations.domain_name` → `domain_classifications.domain_name`
+7. **domain_classifications** (standalone reference table)
+   - **NOT used for ETL classification** - reference/training examples only
+   - Classification is done by intent classifier analyzing `user_query` (NOT via table lookup)
+   - Stores example patterns and metadata for reference
 
 ---
 
 ## Key Design Features
 
 ### Distribution Keys (DISTKEY):
-- All fact tables use `session_id` as DISTKEY for efficient JOINs
-- `domain_classifications` uses `domain_name` as DISTKEY (lookup table)
+- All fact tables: **EVEN distribution** (no DISTKEY specified)
+  - `thread_id` and `room_id` have low cardinality (many messages per thread/room), not suitable for distribution
+- `domain_classifications`: `domain_name` as DISTKEY (reference table, small size)
 
 ### Sort Keys (SORTKEY):
-- Time-series tables: `event_date` as first sort key
-- Composite sort keys for common query patterns
-- Example: `SORTKEY(event_date, domain_category, action_type)`
+- Time-series tables: `event_timestamp` as first sort key
+- Composite sort keys for common query patterns:
+  - `chat_messages`: `SORTKEY(event_timestamp, thread_id)`
+  - `tool_usage`: `SORTKEY(event_timestamp, tool_type)`
+  - `web_searches`: `SORTKEY(event_timestamp, search_type)`
+  - `browser_automations`: `SORTKEY(event_timestamp, domain)`
+  - `web_automations`: `SORTKEY(event_timestamp, domain)` (CRITICAL for Goal 2 analytics)
+  - `usage_metrics`: `SORTKEY(event_timestamp, model, thread_id)`
+  - `domain_classifications`: `SORTKEY(domain_category, intent_type, domain_name)`
 
 ### Intent Classifier Integration:
-- **Source**: `tool_usage` table (all events stored here first) + `chat_sessions.user_query`
+- **Source**: `tool_usage` table (all events stored here first) + `chat_messages.user_query`
+- **Classification Basis**: Based on `response_body`, `step_type`, and `tool` fields from JSON
+- **One Tool Per Message**: Classifier selects ONE tool per message (others discarded if multiple exist)
+- **Multiple Subdomains Per Message**: ONE tool_type can have MULTIPLE intents in a single message (stored as comma-separated values)
 - **Two-Stage Classification**:
-  1. **Tool Routing**: Based on `tool_type` and `step_type`
-     - `tool_type='web_search'` → `web_searches` (result_count stored in web_searches)
-     - `tool_type='browser_tool_execution'` → `browser_automations`
-     - `tool_type='agent_progress' AND step_type='ENTROPY_REQUEST'` → `web_automations`
-  2. **Domain Classification**: Based on `user_query` analysis (for `web_automations`)
-     - Intent classifier analyzes `user_query` from `request_body`
-     - Outputs `domain_category` (Shopping, Booking, Entertainment, Work, Education, Finance)
-     - Outputs `intent_type` (Transactional, Informational, Social, Entertainment, Productivity)
-- **Tracking**: `classification_target`, `classification_confidence`, and `domain_category` fields
+  1. **Tool Routing**: Based on `tool_type` and `step_type` combination
+     - `tool_type='web_search'` → `classification_target='web_search'` → `web_searches`
+     - `tool_type='browser_tool_execution' AND step_type != 'ENTROPY_REQUEST'` → `classification_target='browser_automation'` → `browser_automations`
+     - `tool_type='browser_tool_execution' AND step_type='ENTROPY_REQUEST'` → `classification_target='web_automation'` → `web_automations`
+     - `tool_type='agent_progress' AND step_type='ENTROPY_REQUEST'` → `classification_target='web_automation'` → `web_automations`
+     - `tool_type='agent_progress' AND step_type != 'ENTROPY_REQUEST'` → `classification_target='none'` → stays in `tool_usage` only
+     - **Key Rule**: `step_type='ENTROPY_REQUEST'` always routes to `web_automations` (actual web action)
+  2. **Domain/Subdomain Classification**: Based on `user_query` analysis
+     - Intent classifier analyzes `user_query` from `request_body.messages[0].content`
+     - Outputs `domain` (e.g., 'Transactional', 'Informational', 'Entertainment', 'Productivity')
+     - Outputs `subdomain` (e.g., 'food_order,delivery' for multiple intents, 'shopping', 'booking' for single intent)
+     - **Multiple Intents Support**: Can identify and store multiple subdomain intents as comma-separated values (e.g., 'food_order,delivery')
+     - Stored in `chat_messages.domain` and `chat_messages.subdomain` (source of truth)
+     - Denormalized to specialized tables (`web_searches`, `browser_automations`, `web_automations`) for analytics without JOINs
+- **Tracking**: `classification_target` in `tool_usage`, `domain`/`subdomain` in `chat_messages` and specialized tables
 
 ---
 
 ## Notes
 
 1. **Foreign Key Constraints**: Redshift doesn't enforce FK constraints, but relationships are maintained logically through ETL
-2. **Denormalization**: `session_id` and `thread_id` are denormalized across tables for better JOIN performance
-3. **ETL Workflow**: Intent classifier runs before table inserts, routing data to appropriate tables
-4. **Domain Classification**: Lookup happens during ETL, not via SQL JOINs at query time
-5. **Simplified Schema**: `browser_history` and `search_results` tables removed - search result count stored directly in `web_searches.result_count`
+
+2. **Denormalization**: `domain` and `subdomain` are denormalized from `chat_messages` to specialized tables for better query performance (avoids JOINs)
+
+3. **ETL Workflow**: Intent classifier runs before table inserts, routing data to appropriate tables based on `response_body`, `step_type`, and `tool`
+
+4. **Domain/Subdomain Classification**: Done by intent classifier analyzing `user_query` from `request_body`, NOT via table lookup
+
+5. **One Tool Per Message**: Classifier selects ONE tool per message - if multiple tools exist in JSON, others are discarded
+
+6. **Multiple Subdomains Per Message**: ONE tool_type can have MULTIPLE intents in a single message - stored as comma-separated values in `subdomain` field (e.g., 'food_order,delivery')
+
+7. **Source of Truth**: `chat_messages.domain` and `chat_messages.subdomain` are the source of truth, denormalized to specialized tables
+
+8. **Large Content Separation**: `message_response_content` separated from `chat_messages` for performance (Redshift best practice)
+
+9. **EVEN Distribution**: No DISTKEY specified (EVEN distribution) - `thread_id` and `room_id` have low cardinality, not suitable for distribution
+
+10. **Relationship Fields**: `thread_id` and `room_id` are NOT unique identifiers of a message - they are relationship fields (many messages can belong to one thread/room)
+
+11. **UNIQUE Constraints**: `message_id` has UNIQUE constraints in specialized tables (`web_searches`, `browser_automations`, `web_automations`) ensuring 1:1 relationships
 
 ---
 
@@ -345,3 +437,29 @@ This diagram can be rendered using:
 
 For text-based viewing, see the ASCII diagram above.
 
+---
+
+## Example Queries Using Multiple Subdomains
+
+```sql
+-- Find all messages with "food_order" intent (including multi-intent)
+SELECT * FROM web_automations
+WHERE domain = 'Transactional' 
+  AND subdomain LIKE '%food_order%';
+
+-- Find all messages with both "food_order" AND "delivery"
+SELECT * FROM web_automations
+WHERE domain = 'Transactional'
+  AND subdomain LIKE '%food_order%'
+  AND subdomain LIKE '%delivery%';
+
+-- Count messages by individual subdomain (requires parsing)
+SELECT 
+    COUNT(*) as total_messages,
+    SUM(CASE WHEN subdomain LIKE '%food_order%' THEN 1 ELSE 0 END) as food_order_count,
+    SUM(CASE WHEN subdomain LIKE '%delivery%' THEN 1 ELSE 0 END) as delivery_count,
+    SUM(CASE WHEN subdomain LIKE '%shopping%' THEN 1 ELSE 0 END) as shopping_count,
+    SUM(CASE WHEN subdomain LIKE '%booking%' THEN 1 ELSE 0 END) as booking_count
+FROM web_automations
+WHERE domain = 'Transactional';
+```
