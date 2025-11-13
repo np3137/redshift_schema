@@ -17,12 +17,13 @@ erDiagram
         string country
         string device
         datetime event_timestamp
-        date event_date
         datetime request_timestamp
         datetime response_timestamp
         string user_query
-        boolean task_completed
         string task_completion_status
+        int completion_tokens
+        int prompt_tokens
+        int total_tokens
         string finish_reason
         string model
         string response_type
@@ -51,24 +52,9 @@ erDiagram
         datetime insert_timestamp
     }
     
-    usage_metrics {
-        int metric_id PK
-        string message_id FK
-        string thread_id
-        datetime event_timestamp
-        date event_date
-        datetime request_timestamp
-        datetime response_timestamp
-        int completion_tokens
-        int prompt_tokens
-        int total_tokens
-        int latency_ms
-    }
-    
     chat_messages ||--o{ message_tools : "has"
     chat_messages ||--|| message_response_content : "has"
     message_tools ||--o{ tool_subdomains : "has"
-    chat_messages ||--o{ usage_metrics : "has"
 ```
 
 ---
@@ -91,18 +77,21 @@ erDiagram
 │    country (for filtering)         │         │
 │    device (for filtering)          │         │
 │    event_timestamp (Sort Key)      │         │
-│    event_date (for DAU/WAU/MAU)    │         │
 │    request_timestamp               │         │
 │    response_timestamp              │         │
 │    user_query (Intent Input)       │         │
-│    task_completed                  │         │
 │    task_completion_status          │         │
+│    completion_tokens                │         │
+│    prompt_tokens                    │         │
+│    total_tokens                     │         │
 │    finish_reason                   │         │
 │    model                           │         │
 │    response_type                   │         │
 │                                     │         │
 │ Note: user_id, country, device      │         │
-│ for DAU/WAU/MAU and filtering       │         │
+│ for DAU/WAU/MAU and filtering.      │         │
+│ Token fields moved from             │         │
+│ usage_metrics to chat_messages.     │         │
 └─────────────────────────────────────┘         │
          │                                        │
          │ 1:N (one-to-many)                     │
@@ -147,24 +136,6 @@ erDiagram
 │ PK message_id (1:1)                │
 │    response_content (Large TEXT)   │
 │    insert_timestamp                │
-└─────────────────────────────────────┘                 │
-         │                                       │       │
-         │ Optional FK (many-to-one)            │       │
-         ▼                                       │       │
-┌─────────────────────────────────────┐                 │
-│      usage_metrics                  │                 │
-│  ─────────────────────────────────  │                 │
-│ PK metric_id                       │                 │
-│ FK message_id (Optional)           │                 │
-│    thread_id (many-to-one)         │                 │
-│    event_timestamp (Sort Key)      │                 │
-│    request_timestamp               │                 │
-│    response_timestamp              │                 │
-│    completion_tokens                │                 │
-│    prompt_tokens                    │                 │
-│    total_tokens                     │                 │
-│    latency_ms                      │                 │
-│    event_date (denormalized)        │                 │
 └─────────────────────────────────────┘                 │
                                                         │
                                                         └─────────────────────┘
@@ -263,11 +234,6 @@ erDiagram
    - FK: `message_response_content.message_id` → `chat_messages.message_id` (PRIMARY KEY)
    - **Best Practice**: Large content separated for performance
 
-4. **chat_messages** → **usage_metrics** (1:N, optional)
-   - One message can have multiple usage metric records (optional FK)
-   - FK: `usage_metrics.message_id` → `chat_messages.message_id` (optional)
-   - Many metrics can belong to one thread_id (many-to-one relationship)
-
 ---
 
 ## Key Design Features
@@ -283,7 +249,6 @@ erDiagram
   - `chat_messages`: `SORTKEY(event_timestamp, user_id)` (optimized for DAU/WAU/MAU queries)
   - `message_tools`: `SORTKEY(message_id, tool_type)` (for joins and tool filtering)
   - `tool_subdomains`: `SORTKEY(tool_action_id, subdomain)` (for joins with message_tools and filtering)
-  - `usage_metrics`: `SORTKEY(event_timestamp, thread_id)`
   - `message_response_content`: `SORTKEY(message_id)`
 
 ### Intent Classifier Integration:
@@ -359,11 +324,11 @@ erDiagram
 
 14. **Thread-Level Support**: Schema fully supports thread-level message counts. Query: `SELECT thread_id, COUNT(*) FROM chat_messages GROUP BY thread_id`
 
-15. **User-Level Support (DAU/WAU/MAU)**: Schema supports user-level aggregations and DAU/WAU/MAU calculations via `user_id` field (in SORTKEY for optimal performance). Query: `SELECT COUNT(DISTINCT user_id) FROM chat_messages WHERE event_date = CURRENT_DATE` (DAU)
+15. **User-Level Support (DAU/WAU/MAU)**: Schema supports user-level aggregations and DAU/WAU/MAU calculations via `user_id` field (in SORTKEY for optimal performance). Query: `SELECT COUNT(DISTINCT user_id) FROM chat_messages WHERE DATE(event_timestamp) = CURRENT_DATE` (DAU)
 
-16. **Geographic and Device Filtering**: `country` and `device` fields enable geographic and device-level analytics. Query: `SELECT country, COUNT(DISTINCT user_id) FROM chat_messages WHERE event_date = CURRENT_DATE GROUP BY country` (DAU by country)
+16. **Geographic and Device Filtering**: `country` and `device` fields enable geographic and device-level analytics. Query: `SELECT country, COUNT(DISTINCT user_id) FROM chat_messages WHERE DATE(event_timestamp) = CURRENT_DATE GROUP BY country` (DAU by country)
 
-17. **Denormalized event_date**: `chat_messages` and `usage_metrics` include `event_date` (denormalized from `event_timestamp`) to avoid `DATE()` function in queries, following Redshift best practices. Enables efficient DAU/WAU/MAU queries.
+17. **Token Fields in chat_messages**: Token usage fields (`completion_tokens`, `prompt_tokens`, `total_tokens`) are now stored directly in `chat_messages` table, eliminating the need for a separate `usage_metrics` table. This simplifies the schema and improves query performance for token-related analytics.
 
 ---
 
