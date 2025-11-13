@@ -10,46 +10,46 @@ This document provides an Entity-Relationship diagram of the Redshift schema for
 ```mermaid
 erDiagram
     chat_messages {
-        string request_id PK
-        string room_id
-        string thread_id
-        string user_id
-        string country
-        string device
-        datetime event_timestamp
-        datetime request_timestamp
-        datetime response_timestamp
-        string user_query
-        string task_completion_status
-        int completion_tokens
-        int prompt_tokens
-        int total_tokens
-        string finish_reason
-        string model
-        string response_type
+        string request_id PK "Unique identifier per message"
+        string room_id "Many-to-one relationship"
+        string thread_id "Many-to-one relationship"
+        string user_id "Many-to-one relationship, for DAU/WAU/MAU"
+        string country "ISO country code for filtering"
+        string device "Device type for filtering"
+        datetime event_timestamp "Sort key for time-series queries"
+        datetime request_timestamp "For latency calculation"
+        datetime response_timestamp "For latency calculation"
+        string user_query "Input for intent classifier"
+        string task_completion_status "Task status: completed/failed/partial/in_progress/cancelled"
+        int completion_tokens "Token usage from response"
+        int prompt_tokens "Token usage from response"
+        int total_tokens "Token usage from response"
+        string finish_reason "Response finish reason: stop/length/content_filter"
+        string model "Model name used"
+        string response_type "Response type: end_of_stream etc"
     }
     
     message_tools {
-        string tool_action_id PK
-        string request_id FK
-        string tool_type
-        string step_type
-        string classification_target
-        string domain
-        datetime event_timestamp
+        string tool_action_id PK "Unique identifier per tool action"
+        string request_id FK "Foreign key to chat_messages"
+        string tool_type "Tool type: web_search/browser_tool_execution/agent_progress"
+        string step_type "Step type: ENTROPY_REQUEST/SEARCH_BROWSER etc"
+        string classification_target "Classification: browser_automation/web_automation/web_search/none"
+        string domain "Tool-level domain: Transactional/Informational etc"
+        datetime event_timestamp "Denormalized from chat_messages"
     }
     
     tool_subdomains {
-        string subdomain_id PK
-        string tool_action_id FK
-        string subdomain
-        datetime event_timestamp
+        string subdomain_id PK "Unique identifier per subdomain"
+        string tool_action_id FK "Foreign key to message_tools"
+        string subdomain "Subdomain intent: food_order/delivery/shopping/booking etc"
+        datetime event_timestamp "Denormalized from message_tools"
     }
     
     message_response_content {
-        string request_id PK
-        string response_content
-        datetime event_timestamp
+        string request_id PK "Foreign key to chat_messages, 1:1 relationship"
+        string response_content "Large text content up to 65KB"
+        datetime event_timestamp "Timestamp when content was inserted"
     }
     
     chat_messages ||--o{ message_tools : "has"
@@ -70,23 +70,40 @@ erDiagram
 ┌─────────────────────────────────────┐
 │        chat_messages                │ ◄───────┐
 │  ─────────────────────────────────  │         │ One-to-Many
-│ PK request_id (PRIMARY KEY)        │         │
-│    room_id (many-to-one)           │         │
-│    thread_id (many-to-one)         │         │
-│    user_id (many-to-one)           │         │
-│    country (for filtering)         │         │
-│    device (for filtering)          │         │
-│    event_timestamp (Sort Key)      │         │
-│    request_timestamp               │         │
-│    response_timestamp              │         │
-│    user_query (Intent Input)       │         │
-│    task_completion_status          │         │
-│    completion_tokens                │         │
-│    prompt_tokens                    │         │
-│    total_tokens                     │         │
-│    finish_reason                   │         │
-│    model                           │         │
-│    response_type                   │         │
+│ PK request_id                       │         │
+│    Desc: Unique identifier per message│       │
+│    room_id                           │         │
+│    Desc: Many-to-one relationship   │         │
+│    thread_id                         │         │
+│    Desc: Many-to-one relationship   │         │
+│    user_id                           │         │
+│    Desc: Many-to-one, for DAU/WAU/MAU│        │
+│    country                           │         │
+│    Desc: ISO country code for filtering│       │
+│    device                            │         │
+│    Desc: Device type for filtering  │         │
+│    event_timestamp (Sort Key)        │         │
+│    Desc: Sort key for time-series   │         │
+│    request_timestamp                 │         │
+│    Desc: For latency calculation    │         │
+│    response_timestamp                │         │
+│    Desc: For latency calculation    │         │
+│    user_query                        │         │
+│    Desc: Input for intent classifier│         │
+│    task_completion_status            │         │
+│    Desc: completed/failed/partial/in_progress/cancelled│
+│    completion_tokens                 │         │
+│    Desc: Token usage from response  │         │
+│    prompt_tokens                     │         │
+│    Desc: Token usage from response  │         │
+│    total_tokens                      │         │
+│    Desc: Token usage from response  │         │
+│    finish_reason                     │         │
+│    Desc: stop/length/content_filter │         │
+│    model                             │         │
+│    Desc: Model name used            │         │
+│    response_type                     │         │
+│    Desc: end_of_stream etc          │         │
 │                                     │         │
 │ Note: user_id, country, device      │         │
 │ for DAU/WAU/MAU and filtering.      │         │
@@ -100,12 +117,19 @@ erDiagram
 │   message_tools                     │ ────────┼───────┐
 │  ─────────────────────────────────  │         │       │ Multiple Tools
 │ PK tool_action_id                  │         │       │ Per Message
+│    Desc: Unique identifier per tool│         │       │
 │ FK request_id                      │         │       │
+│    Desc: FK to chat_messages       │         │       │
 │    tool_type (Source of Truth)     │         │       │
+│    Desc: web_search/browser_tool_execution/agent_progress│
 │    step_type (Source of Truth)     │         │       │
+│    Desc: ENTROPY_REQUEST/SEARCH_BROWSER etc│         │
 │    classification_target            │         │       │
+│    Desc: browser_automation/web_automation/web_search/none│
 │    domain (Source of Truth)         │         │       │
+│    Desc: Transactional/Informational etc (per tool)│   │
 │    event_timestamp                  │         │       │
+│    Desc: Denormalized from chat_messages│     │       │
 │                                     │         │       │
 │ Note: Junction table - one row     │         │       │
 │ per tool action. Domain per tool.  │         │       │
@@ -117,9 +141,13 @@ erDiagram
 │   tool_subdomains                   │ ────────┼───────┐
 │  ─────────────────────────────────  │         │       │ Multiple Subdomains
 │ PK subdomain_id                    │         │       │ Per Tool
+│    Desc: Unique identifier per subdomain│     │       │
 │ FK tool_action_id                  │         │       │
+│    Desc: FK to message_tools       │         │       │
 │    subdomain (Source of Truth)     │         │       │
+│    Desc: food_order/delivery/shopping/booking etc│    │
 │    event_timestamp                  │         │       │
+│    Desc: Denormalized from message_tools│     │       │
 │                                     │         │       │
 │ Note: Junction table - one row     │         │       │
 │ per subdomain per tool              │         │       │
@@ -134,8 +162,11 @@ erDiagram
 │   message_response_content          │                 │
 │  ─────────────────────────────────  │
 │ PK request_id (1:1)                │
+│    Desc: FK to chat_messages, 1:1  │
 │    response_content (Large TEXT)   │
+│    Desc: Large text content up to 65KB│
 │    event_timestamp                 │
+│    Desc: Timestamp when content inserted│
 └─────────────────────────────────────┘                 │
                                                         │
                                                         └─────────────────────┘
