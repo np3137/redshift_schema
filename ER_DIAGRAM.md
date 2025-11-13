@@ -10,7 +10,7 @@ This document provides an Entity-Relationship diagram of the Redshift schema for
 ```mermaid
 erDiagram
     chat_messages {
-        string message_id PK
+        string request_id PK
         string room_id
         string thread_id
         string user_id
@@ -30,8 +30,8 @@ erDiagram
     }
     
     message_tools {
-        int tool_action_id PK
-        string message_id FK
+        string tool_action_id PK
+        string request_id FK
         string tool_type
         string step_type
         string classification_target
@@ -40,16 +40,16 @@ erDiagram
     }
     
     tool_subdomains {
-        int subdomain_id PK
-        int tool_action_id FK
+        string subdomain_id PK
+        string tool_action_id FK
         string subdomain
         datetime event_timestamp
     }
     
     message_response_content {
-        string message_id PK
+        string request_id PK
         string response_content
-        datetime insert_timestamp
+        datetime event_timestamp
     }
     
     chat_messages ||--o{ message_tools : "has"
@@ -70,7 +70,7 @@ erDiagram
 ┌─────────────────────────────────────┐
 │        chat_messages                │ ◄───────┐
 │  ─────────────────────────────────  │         │ One-to-Many
-│ PK message_id (PRIMARY KEY)        │         │
+│ PK request_id (PRIMARY KEY)        │         │
 │    room_id (many-to-one)           │         │
 │    thread_id (many-to-one)         │         │
 │    user_id (many-to-one)           │         │
@@ -100,7 +100,7 @@ erDiagram
 │   message_tools                     │ ────────┼───────┐
 │  ─────────────────────────────────  │         │       │ Multiple Tools
 │ PK tool_action_id                  │         │       │ Per Message
-│ FK message_id                      │         │       │
+│ FK request_id                      │         │       │
 │    tool_type (Source of Truth)     │         │       │
 │    step_type (Source of Truth)     │         │       │
 │    classification_target            │         │       │
@@ -133,9 +133,9 @@ erDiagram
 ┌─────────────────────────────────────┐                 │
 │   message_response_content          │                 │
 │  ─────────────────────────────────  │
-│ PK message_id (1:1)                │
+│ PK request_id (1:1)                │
 │    response_content (Large TEXT)   │
-│    insert_timestamp                │
+│    event_timestamp                 │
 └─────────────────────────────────────┘                 │
                                                         │
                                                         └─────────────────────┘
@@ -189,16 +189,16 @@ erDiagram
         │
         ├─ Example: "order food and schedule delivery"
         │   └─> UPDATE chat_messages SET domain='Transactional'
-        │   └─> INSERT INTO tool_subdomains (message_id, subdomain='food_order')
-        │   └─> INSERT INTO tool_subdomains (message_id, subdomain='delivery')
+        │   └─> INSERT INTO tool_subdomains (tool_action_id, subdomain='food_order')
+        │   └─> INSERT INTO tool_subdomains (tool_action_id, subdomain='delivery')
         │
         ├─ Example: "book a hotel room"
         │   └─> UPDATE chat_messages SET domain='Transactional'
-        │   └─> INSERT INTO tool_subdomains (message_id, subdomain='booking')
+        │   └─> INSERT INTO tool_subdomains (tool_action_id, subdomain='booking')
         │
         └─ Example: "search for restaurant reviews"
             └─> UPDATE chat_messages SET domain='Informational'
-            └─> INSERT INTO tool_subdomains (message_id, subdomain='restaurant_info')
+            └─> INSERT INTO tool_subdomains (tool_action_id, subdomain='restaurant_info')
 
 5. STORAGE
    └─ All tool classification fields stored in chat_messages
@@ -216,7 +216,7 @@ erDiagram
 
 1. **chat_messages** → **message_tools** (1:N)
    - One message can have multiple tool records (one row per tool)
-   - FK: `message_tools.message_id` → `chat_messages.message_id`
+   - FK: `message_tools.request_id` → `chat_messages.request_id`
    - **Multiple Tools**: Each tool action stored as a separate row (normalized structure)
    - **Tool Classification**: `tool_type`, `step_type`, `classification_target`, `domain` stored in `message_tools` (SOURCE OF TRUTH)
    - **Domain Per Tool**: Each tool can have its own domain classification
@@ -231,7 +231,7 @@ erDiagram
 
 3. **chat_messages** → **message_response_content** (1:1)
    - One message has exactly one response content (or NULL)
-   - FK: `message_response_content.message_id` → `chat_messages.message_id` (PRIMARY KEY)
+   - FK: `message_response_content.request_id` → `chat_messages.request_id` (PRIMARY KEY)
    - **Best Practice**: Large content separated for performance
 
 ---
@@ -241,15 +241,15 @@ erDiagram
 ### Distribution Keys (DISTKEY):
 - All fact tables: **EVEN distribution** (explicitly declared with `DISTSTYLE EVEN`)
   - `thread_id` and `room_id` have low cardinality (many messages per thread/room), not suitable for distribution
-  - `message_id` is VARCHAR, not suitable for DISTKEY
+  - `request_id` is VARCHAR, not suitable for DISTKEY
 
 ### Sort Keys (SORTKEY):
 - Time-series tables: `event_timestamp` as first sort key
 - Composite sort keys for common query patterns:
   - `chat_messages`: `SORTKEY(event_timestamp, user_id)` (optimized for DAU/WAU/MAU queries)
-  - `message_tools`: `SORTKEY(message_id, tool_type)` (for joins and tool filtering)
+  - `message_tools`: `SORTKEY(request_id, tool_type)` (for joins and tool filtering)
   - `tool_subdomains`: `SORTKEY(tool_action_id, subdomain)` (for joins with message_tools and filtering)
-  - `message_response_content`: `SORTKEY(message_id)`
+  - `message_response_content`: `SORTKEY(request_id)`
 
 ### Intent Classifier Integration:
 - **Source**: `chat_messages.user_query` (input for intent classifier)
@@ -318,9 +318,9 @@ erDiagram
 
 11. **Normalized Tool Schema**: Tool classification fields (`tool_type`, `step_type`, `classification_target`, `domain`) are stored in `message_tools` junction table to support multiple tools per message. This enables a single message to have multiple tools (e.g., web_search + browser_automation + web_automation), each with its own domain classification.
 
-12. **DAU/WAU/MAU Support**: `user_id`, `country`, `device`, and `event_date` fields in `chat_messages` enable efficient DAU/WAU/MAU calculations and geographic/device filtering. SORTKEY optimized with `user_id` for user-level queries.
+12. **DAU/WAU/MAU Support**: `user_id`, `country`, `device` fields in `chat_messages` enable efficient DAU/WAU/MAU calculations and geographic/device filtering. SORTKEY optimized with `user_id` for user-level queries. Use `DATE(event_timestamp)` for date filtering.
 
-13. **Junction Table for Subdomains**: `tool_subdomains` is a normalized junction table that stores one row per subdomain intent per tool. Links to `message_tools` via `tool_action_id` (not `message_id`). This enables better querying and analytics on individual subdomains per tool compared to comma-separated values.
+13. **Junction Table for Subdomains**: `tool_subdomains` is a normalized junction table that stores one row per subdomain intent per tool. Links to `message_tools` via `tool_action_id` (not `request_id`). This enables better querying and analytics on individual subdomains per tool compared to comma-separated values.
 
 14. **Thread-Level Support**: Schema fully supports thread-level message counts. Query: `SELECT thread_id, COUNT(*) FROM chat_messages GROUP BY thread_id`
 
@@ -354,7 +354,7 @@ This diagram can be rendered using:
 -- Find all tools with "food_order" intent (using normalized junction tables)
 SELECT DISTINCT mt.*, cm.user_id, cm.country, cm.device
 FROM chat_messages cm
-JOIN message_tools mt ON cm.message_id = mt.message_id
+JOIN message_tools mt ON cm.request_id = mt.request_id
 JOIN tool_subdomains ts ON mt.tool_action_id = ts.tool_action_id
 WHERE mt.tool_type = 'web_automation'
   AND mt.domain = 'Transactional' 
@@ -363,7 +363,7 @@ WHERE mt.tool_type = 'web_automation'
 -- Find all messages with tools that have both "food_order" AND "delivery" subdomains
 SELECT DISTINCT cm.*
 FROM chat_messages cm
-JOIN message_tools mt ON cm.message_id = mt.message_id
+JOIN message_tools mt ON cm.request_id = mt.request_id
 WHERE mt.domain = 'Transactional'
   AND mt.tool_action_id IN (
       SELECT tool_action_id FROM tool_subdomains WHERE subdomain = 'food_order'
@@ -375,11 +375,11 @@ WHERE mt.domain = 'Transactional'
 -- Count messages by individual subdomain (easy with normalized structure)
 SELECT 
     ts.subdomain,
-    COUNT(DISTINCT mt.message_id) as message_count,
+    COUNT(DISTINCT mt.request_id) as message_count,
     COUNT(*) as subdomain_occurrence_count
 FROM tool_subdomains ts
 JOIN message_tools mt ON ts.tool_action_id = mt.tool_action_id
-JOIN chat_messages cm ON mt.message_id = cm.message_id
+JOIN chat_messages cm ON mt.request_id = cm.request_id
 WHERE mt.tool_type = 'web_automation'
   AND mt.domain = 'Transactional'
 GROUP BY ts.subdomain
@@ -388,14 +388,14 @@ ORDER BY message_count DESC;
 -- Count tools with multiple subdomains
 SELECT 
     mt.tool_action_id,
-    mt.message_id,
+    mt.request_id,
     COUNT(*) as subdomain_count,
     LISTAGG(ts.subdomain, ', ') WITHIN GROUP (ORDER BY ts.subdomain) as subdomains
 FROM message_tools mt
 JOIN tool_subdomains ts ON mt.tool_action_id = ts.tool_action_id
 WHERE mt.tool_type = 'web_automation'
   AND mt.domain = 'Transactional'
-GROUP BY mt.tool_action_id, mt.message_id
+GROUP BY mt.tool_action_id, mt.request_id
 HAVING COUNT(*) > 1;
 
 -- Cross-tool-type analytics
@@ -405,12 +405,12 @@ GROUP BY mt.tool_type, mt.classification_target;
 
 -- Messages with multiple tools
 SELECT 
-    cm.message_id,
+    cm.request_id,
     COUNT(mt.tool_action_id) as tool_count,
     LISTAGG(mt.tool_type, ', ') WITHIN GROUP (ORDER BY mt.tool_type) as tools
 FROM chat_messages cm
-JOIN message_tools mt ON cm.message_id = mt.message_id
-GROUP BY cm.message_id
+JOIN message_tools mt ON cm.request_id = mt.request_id
+GROUP BY cm.request_id
 HAVING COUNT(mt.tool_action_id) > 1;
 
 -- Join with chat_messages to get user_query and all subdomains
@@ -423,10 +423,10 @@ SELECT
     cm.country,
     cm.device
 FROM chat_messages cm
-JOIN message_tools mt ON cm.message_id = mt.message_id
+JOIN message_tools mt ON cm.request_id = mt.request_id
 JOIN tool_subdomains ts ON mt.tool_action_id = ts.tool_action_id
 WHERE mt.domain = 'Transactional'
-ORDER BY cm.message_id, mt.tool_type, ts.subdomain;
+ORDER BY cm.request_id, mt.tool_type, ts.subdomain;
 
 -- Get all tools and subdomains for a specific message
 SELECT 
@@ -436,19 +436,19 @@ SELECT
     mt.domain,
     ts.subdomain
 FROM chat_messages cm
-LEFT JOIN message_tools mt ON cm.message_id = mt.message_id
+LEFT JOIN message_tools mt ON cm.request_id = mt.request_id
 LEFT JOIN tool_subdomains ts ON mt.tool_action_id = ts.tool_action_id
-WHERE cm.message_id = 'your_message_id_here';
+WHERE cm.request_id = 'your_request_id_here';
 
 -- DAU (Daily Active Users)
 SELECT COUNT(DISTINCT user_id) as dau
 FROM chat_messages
-WHERE event_date = CURRENT_DATE;
+WHERE DATE(event_timestamp) = CURRENT_DATE;
 
 -- DAU by Country
 SELECT country, COUNT(DISTINCT user_id) as dau
 FROM chat_messages
-WHERE event_date = CURRENT_DATE
+WHERE DATE(event_timestamp) = CURRENT_DATE
 GROUP BY country;
 
 -- Tool Usage by Country and Device
@@ -458,7 +458,7 @@ SELECT
     cm.device,
     COUNT(*) as usage_count
 FROM chat_messages cm
-JOIN message_tools mt ON cm.message_id = mt.message_id
-WHERE cm.event_date = CURRENT_DATE
+JOIN message_tools mt ON cm.request_id = mt.request_id
+WHERE DATE(cm.event_timestamp) = CURRENT_DATE
 GROUP BY mt.tool_type, cm.country, cm.device;
 ```
