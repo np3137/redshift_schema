@@ -1,0 +1,30 @@
+erDiagram
+    chat_messages {
+        varchar chat_id PK "Unique identifier for each chat message"
+        varchar room_id "Room identifier - Distribution Key"
+        varchar user_id "User identifier"
+        varchar thread_id "Thread identifier for conversation context"
+        varchar country "Country code - ISO 2 char"
+        varchar platform "Platform used - web, mobile, etc."
+        varchar version "Application version"
+        timestamp event_timestamp "When the event occurred - Sort Key 1"
+        timestamp request_timestamp "When the request was made"
+        timestamp response_timestamp "When the response was generated"
+        varchar task_completion_status "Status of task completion"
+        int completion_tokens "Number of completion tokens used"
+        int prompt_tokens "Number of prompt tokens used"
+        int total_tokens "Total tokens used"
+        varchar model "AI model used for processing"
+    }
+    
+    tool_classifications {
+        bigint tool_classification_id PK "Auto-generated unique ID"
+        varchar chat_id FK "Reference to chat message - Distribution Key"
+        varchar tool_type "Type of tool used - Sort Key 2"
+        varchar step_type "Step type within the tool"
+        varchar domain "Domain category of the tool"
+        varchar subdomain "Specific subdomain - Sort Key 4"
+    }
+    
+    %% Relationships
+    chat_messages ||--o{ tool_classifications : "1 chat_message has 1-3 tool_types"
