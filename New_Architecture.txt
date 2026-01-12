@@ -1,0 +1,466 @@
+1. Background and Motivation
+
+The existing Redshift datasets include GUID , which makes them subject to data subject rights (DSR) compliance requirements.
+In addition, Redshift is not suitable for data subject–driven deletion workloads.
+
+To address both compliance and performance concerns, we decided to redesign the architecture and implementation.
+2. Architecture Redesign Overview
+
+Raw data and aggregated data are stored using S3 with Apache Iceberg.
+
+Key considerations during the architecture redesign were:
+
+    Use a storage layer that supports easy and reliable data deletion.
+
+    Optimize the architecture with cost efficiency in mind.
+
+    Predefine dashboards and generate aggregated datasets without personal identifiers
+    (user_id, room_id, chat_id).
+
+    Design the system so that raw data is subject to deletion, while aggregated data
+    (which contains no personal identifiers) is retained.
+
+3. Required Dashboard
+3.1.  Charts
+3.1.1. Active Users Over Time (Multi-series Line Chart)
+
+X-axis: Time Period (MAU: Month / WAU: week / DAU: Day)
+Y-axis: Total
+legend: platform(All, Windows, Android, etc)
+charts:
+
+    MAU
+    WAU
+    DAU
+
+3.1.2. Total Over Time (Multi-series Line Chart)
+
+X-axis: Time Period
+Y-axis: Total
+legend: platform(All, Windows, Android, etc)
+filter: Daily / Weekly / Monthly
+charts:
+
+    Total messages
+    Total Rooms
+    Total Tokens
+
+3.1.3. Total Token Breakdown Over Time (Stacked Bar cart)
+
+X-axis: Time Period
+Y-axis: Tokens
+stack: Tokens (Input Tokens + Output Tokens)
+filter: Daily / Weekly / Monthly
+charts:
+
+    Total Token Breakdown
+
+3.1.4. Total Cost Breakdown Over Time (Stacked Bar Chart)
+
+X-axis: Time Period
+Y-axis: Cost (USD)
+stack: Cost (Request Cost+Input Tokens Cost+Output Tokens Cost)
+filter: Daily / Weekly / Monthly
+charts:
+
+    Total Cost Breakdown
+
+3.1.5. Active User Breakdown Over Time (Stacked Bar Chart)
+
+X-axis: Time Period
+Y-axis: Number of Active Users
+stack: Categories
+filter: Daily / Weekly / Monthly
+charts
+
+    Country Breakdown
+    Platform Breakdown
+    Region Breakdown
+    Version Breakdown
+    Device Model Breakdown
+
+3.1.6. Tool Breakdown Over Time (Stacked Bar Chart)
+
+X-axis: Time Period
+Y-axis: Number of tool calls
+legend: Tool Type (fetch_url_content, file_attachment_search, browser_agent_v2, web_search, browser_tool_execution)
+filter: Daily / Weekly / Monthly
+charts:
+
+    Tool Call Breakdown
+
+3.1.7. Average Over Time (Multi-series Line Chart)
+
+X-axis: Time Period
+Y-axis: Average
+legend: platform(All, Windows, Android, etc)
+filter: Daily / Weekly / Monthly
+charts
+
+    Cost per User
+    Tokens per User
+    Rooms per User
+    Messages per User
+    Messages per Room
+    Tokens per Message
+
+3.1.8. Bucketed Distribution (Grouped Bar Chart)
+
+X: Bucket
+Y: Number of
+legend: platform (All, Windows, Android, etc)
+filter:  Daily / Weekly / Monthly
+charts:
+
+    Cost per User
+        Daily: $0–0.01 / $0.01–0.05 / $0.05–0.1 / $0.1–0.3 / $0.3–0.5 / $0.5–1 / $1–2 / $2–5 / $5+
+        Weekly: $0–0.05 / $0.05–0.5 / $0.5–2 / $2–5 / $5–10 / $10–30 / $30–50 / $50–100 / $100+
+        Monthly: $0–0.1 / $0.1–1 / $1–5 / $5–10 / $10–30 / $30–50 / $50–100 / $100–300 / $300+
+    Tokens per User
+        Daily: 1–200 / 201–500 / 501–1k / 1k–3k / 3k–10k / 10k–30k / 30k–50k / 50k–100k / 100k+
+        Weekly: 1–1k / 1k–5k / 5k–20k / 20k–50k / 50k–100k / 100k–300k / 300k–500k / 500k–1M / 1M+
+        Monthly: 1–5k / 5k–20k / 20k–100k / 100k–300k / 300k–500k / 500k–1M / 1M–3M / 3M–5M / 5M+
+    Rooms per User
+        Daily: 1 / 2 / 3 / 4–5 / 6–10 / 11–20 / 21–50 / 51–100 / 100+
+        Weekly: 1 / 2–3 / 4–5 / 6–10 / 11–20 / 21–50 / 51–100 / 101–200 / 200+
+        Monthly: 1–2 / 3–5 / 6–10 / 11–20 / 21–50 / 51–100 / 101–200 / 201–500 / 500+
+    Messages per User
+        Daily: 1 / 2–3 / 4–5 / 6–10 / 11–20 / 21–50 / 51–100 / 101–200 / 200+
+        Weekly: 1–5 / 6–20 / 21–50 / 51–100 / 101–200 / 201–500 / 501–1k / 1k–2k / 2k+
+        Monthly: 1–10 / 11–50 / 51–200 / 201–500 / 501–1k / 1k–2k / 2k–5k / 5k–10k / 10k+
+    Messages per Room
+        Daily: 1 / 2–3 / 4–5 / 6–10 / 11–20 / 21–50 / 51–100 / 101–200 / 200+
+        Weekly: 1–10 / 11–50 / 51–200 / 201–500 / 501–1k / 1k–2k / 2k–5k / 5k–10k / 10k+
+        Monthly: 1–50 / 51–200 / 201–500 / 501–1k / 1k–2k / 2k–5k / 5k–10k / 10k–20k / 20k+
+    Tokens per Message
+        Daily: 1–100 / 101–300 / 301–800 / 801–1k / 1k–2k / 2k–4k / 4k–8k / 8k–16k / 16k+
+        Weekly: 1–200 / 201–500 / 501–1k / 1k–2k / 2k–4k / 4k–8k / 8k–16k / 16k–32k / 32k+
+        Monthly: 1–500 / 501–1k / 1k–3k / 3k–8k / 8k–16k / 16k–32k / 32k–64k / 64k–128k / 128k+
+
+
+
+
+4. Data Processing Flow
+4.1. Summary
+4.1.1. Data Flows
+
+Kafka → Kafka Connector( Iceberg Sink Connector) → S3 + Iceberg (raw data) → aggregate data with AWS Athena + Airflow → S3 + Iceberg (aggregated data; silver, gold) → Superset Dashboard
+4.1.2. Iceberg tables
+4.1.3. Bronze (Raw: contains identifier; deletion target)
+
+        bronze_chat_events (partition: dt)
+
+            Source: Kafka topic athena-user-chat-analytics-v0
+
+        bronze_tool_calls (partition: dt)
+
+            Source: Kafka topic athena-user-tool-calls-analytics-v0
+
+        (Optional for Phase 2) bronze_reasoning_steps
+
+4.1.4. Silver (Daily; contains identifiers; deletion target)
+
+        silver_user_daily
+
+        silver_room_daily
+
+        silver_tool_daily
+
+        silver_active_user_breakdown_daily
+
+4.1.5. Gold (Dashboard-ready; no identifiers)
+
+        gold_time_series
+
+        gold_bucket_distribution
+
+        gold_active_user_breakdown
+
+        gold_tool_call_breakdown
+
+4.2. Data Flows
+4.2.1. Step1) Kafka Messages
+Topic: athena-user-chat-analytics-v0 (flatten json)
+
+        chat_id
+
+        user_id
+
+        room_id
+
+        timestamp
+
+        dt(YYYY-MM-DD derivated from timestamp)
+
+        user_original_query #only for Phase2
+
+        model
+
+        prompt_tokens
+
+        completion_tokens
+
+        total_tokens
+
+        input_tokens_cost
+
+        output_tokens_cost
+
+        request_cost
+
+        total_cost
+
+        country
+
+        platform
+
+        si_version
+
+        device
+
+        res_status
+
+        res_type
+
+Topic: athena-user-chat-reasoning-steps-analytics-v0 (flatten json)
+
+        reasoning_steps_id
+        chat_id
+        user_id
+        timestamp
+        dt(YYYY-MM-DD derivated from timestamp)
+        thought #only for Phase2
+        tool_type
+
+4.2.2. Step 2) Kafka Connector
+4.2.3. Step 3) Save Raw data to S3 + Iceberg (AWS Athena Queryable Storage; 45 days retension)
+
+iceberg_athena_analytics
+3.1 Bronze Tables (Deletion Target; Raw / Queryable / 45-days retension)
+
+Table: bronze_chat_events
+Source: topic athena-user-chat-analytics-v0
+Partition: dt
+Grain: 1 row per chat_id
+Columns: Same fields as the Kafka topic, excluding Phase 2–only fields.
+Table: bronze_reasoning_steps
+Source: topic athena-user-chat-reasoning-steps-analytics-v0
+
+Table: bronze_tool_calls
+Source: topic athena-user-chat-reasoning-steps-analytics-v0
+Partition: dt
+Grain: 1 row per reasoning_steps_id
+Columns: Same fields as the Kafka topic, excluding Phase 2–only fields.
+4.2.4. Step 4) Airflow + AWS Athena Aggregation
+DAG 1: Silver Daily Aggregation
+
+Purpose: Build entity-level daily aggregates from Bronze (raw) Iceberg tables. This DAG is also the primary target for data deletion requests.
+Schedule: Daily (e.g. 02:00 UTC)
+Tasks: 
+
+                Validate Bronze Availability
+                Check that Bronze partitions for target dates exist
+
+                Build silver_user_daily
+
+                    Aggregate from bronze_chat_events
+
+                    Grain: (dt, platform, user_id)
+
+                    Metrics: messages_cnt, rooms_cnt, tokens, costs
+
+                Build silver_room_daily
+
+                    Aggregate from bronze_chat_events
+
+                    Grain: (dt, platform, room_id)
+
+                Build silver_tool_daily
+
+                    Aggregate from bronze_reasoning_steps
+
+                    Grain: (dt, platform, tool_type)
+
+Output Tables: 
+
+                silver_user_daily
+
+                silver_room_daily
+
+                silver_tool_daily
+
+DAG 2: Gold Daily Aggregation
+
+Purpose: Generate dashboard-ready daily metrics from Silver tables.
+Schedule: Daily, after the Silver DAG completes
+Tasks: 
+
+                Build gold_time_series (DAILY)
+
+                    Active users
+
+                    Total messages, rooms, tokens, cost
+
+                    Average metrics per user / per room
+
+                Build gold_bucket_distribution (DAILY)
+
+                    Bucketed distributions for metrics (tokens, messages, cost, etc.)
+
+                Build gold_active_user_breakdown (DAILY)
+                Active user breakdown by:
+
+                    Country
+
+                    Region
+
+                    Response status
+
+                    Response type
+
+                Build gold_tool_call_breakdown (DAILY)
+
+                    Tool invocation counts derived from reasoning steps
+
+Output Tables:
+
+                gold_time_series (grain = DAILY)
+
+                gold_bucket_distribution (grain = DAILY)
+
+                gold_active_user_breakdown (grain = DAILY)
+
+                gold_tool_call_breakdown (grain = DAILY)
+
+DAG 3: Gold Weekly Aggregation
+
+Purpose: Roll up daily Gold metrics into weekly aggregates.
+Schedule: Weekly (e.g. every Monday)
+Tasks: 
+
+                Aggregate DAILY → WEEKLY
+
+                    Use period_start = week_start
+
+                    Grain: (WEEKLY, period_start, platform)
+
+Output: Same Gold tables with grain = WEEKLY
+DAG 4: Gold Monthly Aggregation
+
+Purpose: Roll up daily Gold metrics into monthly aggregates.
+Schedule: Monthly (e.g. 1st day of the month)
+Tasks: 
+
+                Aggregate DAILY → MONTHLY
+
+                    Use period_start = month_start
+
+                    Grain: (MONTHLY, period_start, platform)
+
+Output: Same Gold tables with grain = MONTHLY
+DAG 5: Iceberg Maintenance
+
+Purpose: Maintain Iceberg table health and storage efficiency.
+
+Schedule
+
+                    Daily (off-peak hours)
+
+Tasks
+
+
+                    Expire Snapshots
+                    Remove old snapshots beyond the retention window
+
+                    Remove Orphan Files
+                    Clean up unreferenced files
+
+Target Tables
+
+                Bronze tables
+
+                Silver tables
+
+4.2.5. Step 5) Save Raw data to S3 + Iceberg (AWS Athena Queryable Storage;)
+5.1 Silver (Deletion Target; contains user_id; Daily; 45-day retention)
+
+Table: silver_user_daily
+Grain: (dt, platform, user_id)
+From: bronze_chat_events
+Fields: messages_cnt, rooms_cnt, tokens, costs …
+
+example)
+2026-01-08 	Windows 	u_001 	3 	2 	420 	980 	1,400 	0.042 	0.196 	0.010 	0.248
+2026-01-08 	Windows 	u_002 	1 	1 	120 	210 	330 	0.012 	0.042 	0.010 	0.064
+2026-01-08 	Android 	u_003 	8 	3 	1,120 	2,880 	4,000 	0.112 	0.576 	0.020 	0.708
+
+
+Table: silver_room_daily
+
+Grain: (dt, platform, room_id)
+From: bronze_chat_events
+
+example) 
+
+
+2026-01-08 	Windows 	r_101 	12 	1,250 	3,600 	4,850 	0.92
+2026-01-08 	Windows 	r_102 	2 	210 	540 	750 	0.14
+2026-01-08 	Android 	r_201 	35 	4,200 	11,800 	16,000 	3.05
+
+
+Table: silver_tool_daily
+
+Grain: (dt, platform, tool_type)
+From: bronze_tool_calls
+
+example) 
+2026-01-08 	Windows 	web_search 	420 	180
+2026-01-08 	Windows 	fetch_url_content 	190 	95
+2026-01-08 	Android 	browser_agent_v2 	610 	240
+
+Table: silver_active_user_breakdown_daily
+Grain: (dt, platform, dimension, dimension_value)
+From: active_users = count(distinct user_id) with that dimension
+
+example) 
+2026-01-08 	Windows 	COUNTRY 	KR 	5,430
+2026-01-08 	Windows 	SI_VERSION 	20.0.0.1 	9,800
+2026-01-08 	Android 	DEVICE 	SM-A165F 	4,120
+5.2 Gold (Dashboard-ready; Monthly, Weekly, Daily; no user_id / no room_id / no chat_id)
+
+Table: gold_time_series
+Grain: (grain, period_start, platform)
+including daily/weekly/monthly rollup
+
+example)
+DAILY 	2026-01-08 	Android 	12,430 	98,210 	4,120,000 	312.45 	331.5
+WEEKLY 	2026-01-06 	Android 	41,200 	612,500 	25,300,000 	1,920.30 	614.0
+MONTHLY 	2026-01-01 	Android 	120,540 	2,450,000 	98,400,000 	7,820.90 	816.5
+
+Table: gold_bucket_distribution
+Grain: (grain, period_start, platform, metric_name, bucket_order)
+
+example)
+WEEKLY 	2026-01-06 	Windows 	MESSAGES 	3 	21–50 	ROOM 	1,420
+WEEKLY 	2026-01-06 	Windows 	MESSAGES 	4 	51–100 	ROOM 	860
+DAILY 	2026-01-08 	Android 	TOKENS 	1 	1–200 	USER 	6,200
+DAILY 	2026-01-08 	Android 	TOKENS 	2 	201–500 	USER 	3,800
+DAILY 	2026-01-08 	Android 	TOKENS 	9 	100k+ 	USER 	12
+
+Table: gold_active_user_breakdown
+Grain: (grain, period_start, platform, dimension, dimension_value)
+dimension: COUNTRY / PLATFORM / REGION 등 (각각 별도 차트)
+
+example) 
+DAILY 	2026-01-08 	Android 	COUNTRY 	KR 	5,430
+DAILY 	2026-01-08 	Android 	COUNTRY 	US 	3,210
+DAILY 	2026-01-08 	Android 	COUNTRY 	JP 	1,120
+
+Table: gold_tool_call_breakdown
+Grain: (grain, period_start, platform, tool_type)
+
+example) 
+DAILY 	2026-01-08 	Windows 	web_search 	4,230 	1,120
+DAILY 	2026-01-08 	Windows 	fetch_url_content 	2,110 	820
+WEEKLY 	2026-01-06 	Windows 	browser_agent_v2 	9,540 	3,210
+4.2.6. Step 6) Superset
