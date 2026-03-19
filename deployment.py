@@ -144,7 +144,8 @@ def create_table_to_uuid_mapping():
     stg_datasets_dir = Path(__file__).parent.parent / 'superset_assets' / 'stg' / 'datasets'
     table_mapping = {}
 
-    for yaml_file in stg_datasets_dir.glob('*.yaml'):
+    # Datasets are now in subdirectories (e.g., datasets/Amazon_Athena_Iceberg_STG/table.yaml)
+    for yaml_file in stg_datasets_dir.rglob('*.yaml'):
         with open(yaml_file, 'r') as f:
             data = yaml.safe_load(f)
             table_name = data.get('table_name')
@@ -185,6 +186,9 @@ def copy_and_transform_charts(table_uuid_mapping):
 
     config = load_config()
     stg_namespace = config['stg']['database_uuid']
+    # Use env_label from config if available, otherwise use default values for backward compatibility
+    dev_label = config['dev'].get('env_label', 'DEV')
+    stg_label = config['stg'].get('env_label', 'STG')
     chart_uuid_mapping = {}
     chart_id_mapping = {}
     charts_transformed = 0
@@ -252,6 +256,9 @@ def copy_and_transform_dashboard(chart_uuid_mapping, table_uuid_mapping):
 
     config = load_config()
     stg_namespace = config['stg']['database_uuid']
+    # Use env_label from config if available, otherwise use default values for backward compatibility
+    dev_label = config['dev'].get('env_label', 'DEV')
+    stg_label = config['stg'].get('env_label', 'STG')
 
     for dashboard_file in dev_dashboards_dir.glob('*.yaml'):
         with open(dashboard_file, 'r') as f:
@@ -261,9 +268,11 @@ def copy_and_transform_dashboard(chart_uuid_mapping, table_uuid_mapping):
         new_uuid = generate_uuid5(stg_namespace, dashboard_file.stem.replace('DEV', 'STG'))
         dashboard_data['uuid'] = new_uuid
 
-        # Update title and slug
-        dashboard_data['dashboard_title'] = dashboard_data['dashboard_title'].replace('DEV', 'STG')
-        dashboard_data['slug'] = dashboard_data['slug'].replace('dev-test', 'stg-test')
+        # Update title and slug using config values
+        dashboard_data['dashboard_title'] = dashboard_data['dashboard_title'].replace(dev_label, stg_label)
+        slug_from = f"{dev_label.lower()}-test"
+        slug_to = f"{stg_label.lower()}-test"
+        dashboard_data['slug'] = dashboard_data['slug'].replace(slug_from, slug_to)
 
         # Replace chart UUIDs in position
         def replace_chart_uuids(obj):
@@ -325,6 +334,142 @@ def create_metadata():
     print(f"Created: {metadata_file}")
 
 
+def validate_yaml_file(yaml_file):
+    """
+    Validate a YAML file for Superset import compatibility.
+    
+    Returns:
+        tuple: (is_valid: bool, errors: list of error messages)
+    """
+    errors = []
+    
+    try:
+        with open(yaml_file, 'r', encoding='utf-8') as f:
+            # Check for empty files
+            content = f.read()
+            if not content.strip():
+                errors.append("File is empty")
+                return False, errors
+            
+            # Reset file pointer for YAML parsing
+            f.seek(0)
+            data = yaml.safe_load(f)
+            
+            # Validate it's a dictionary (not a list or other type)
+            if not isinstance(data, dict):
+                errors.append(f"Expected dictionary, got {type(data).__name__}")
+                return False, errors
+            
+            # Check for required fields
+            file_name = yaml_file.name
+            
+            if 'metadata.yaml' in file_name:
+                # Validate metadata.yaml specific fields
+                if 'version' not in data:
+                    errors.append("Missing required field: 'version'")
+                if 'type' not in data:
+                    errors.append("Missing required field: 'type'")
+                if 'timestamp' not in data:
+                    errors.append("Missing required field: 'timestamp'")
+            
+            elif file_name.startswith('databases/'):
+                # Validate database files
+                if 'uuid' not in data:
+                    errors.append("Missing required field: 'uuid'")
+                if 'database_name' not in data:
+                    errors.append("Missing required field: 'database_name'")
+                if 'uuid' in data:
+                    import uuid
+                    try:
+                        uuid.UUID(data['uuid'])
+                    except ValueError:
+                        errors.append(f"Invalid UUID format: {data['uuid']}")
+            
+            elif file_name.startswith('datasets/'):
+                # Validate dataset files
+                required_fields = ['uuid', 'table_name', 'schema']
+                for field in required_fields:
+                    if field not in data:
+                        errors.append(f"Missing required field: '{field}'")
+                if 'uuid' in data:
+                    import uuid
+                    try:
+                        uuid.UUID(data['uuid'])
+                    except ValueError:
+                        errors.append(f"Invalid UUID format: {data['uuid']}")
+                if 'columns' not in data:
+                    errors.append("Missing required field: 'columns'")
+            
+            elif file_name.startswith('charts/'):
+                # Validate chart files
+                required_fields = ['uuid', 'slice_name', 'viz_type', 'dataset_uuid']
+                for field in required_fields:
+                    if field not in data:
+                        errors.append(f"Missing required field: '{field}'")
+                if 'uuid' in data:
+                    import uuid
+                    try:
+                        uuid.UUID(data['uuid'])
+                    except ValueError:
+                        errors.append(f"Invalid UUID format: {data['uuid']}")
+                if 'dataset_uuid' in data:
+                    import uuid
+                    try:
+                        uuid.UUID(data['dataset_uuid'])
+                    except ValueError:
+                        errors.append(f"Invalid dataset UUID format: {data['dataset_uuid']}")
+                if 'params' in data and 'datasource' in data['params']:
+                    if not isinstance(data['params'], dict):
+                        errors.append("params must be a dictionary")
+                if 'slice_id' in data['params']:
+                    if not isinstance(data['params']['slice_id'], int):
+                        errors.append("slice_id must be an integer")
+            
+            elif file_name.startswith('dashboards/'):
+                # Validate dashboard files
+                required_fields = ['uuid', 'dashboard_title', 'slug']
+                for field in required_fields:
+                    if field not in data:
+                        errors.append(f"Missing required field: '{field}'")
+                if 'uuid' in data:
+                    import uuid
+                    try:
+                        uuid.UUID(data['uuid'])
+                    except ValueError:
+                        errors.append(f"Invalid UUID format: {data['uuid']}")
+                if 'position' not in data:
+                    errors.append("Missing required field: 'position'")
+                if not isinstance(data['position'], dict):
+                    errors.append("position must be a dictionary")
+            
+            # Check for null values in required fields
+            null_checks = ['uuid', 'dataset_uuid', 'dashboard_title', 'slice_name']
+            for field in null_checks:
+                if field in data and data[field] is None:
+                    errors.append(f"Required field '{field}' has null value")
+            
+            # Check for empty strings
+            string_checks = ['uuid', 'dataset_uuid', 'dashboard_title', 'slice_name', 'viz_type']
+            for field in string_checks:
+                if field in data and isinstance(data[field], str) and not data[field].strip():
+                    errors.append(f"Required field '{field}' is empty")
+            
+            # Check for common issues
+            # Empty dictionaries or lists that should have content
+            if 'columns' in data and isinstance(data['columns'], list) and not data['columns']:
+                errors.append("'columns' field is an empty list - must have at least one column")
+            if 'position' in data and isinstance(data['position'], dict) and not data['position']:
+                errors.append("'position' field is an empty dict - must contain chart positions")
+            
+    except yaml.YAMLError as e:
+        errors.append(f"YAML parsing error: {str(e)}")
+    except Exception as e:
+        errors.append(f"Unexpected error: {str(e)}")
+    
+    is_valid = len(errors) == 0
+    return is_valid, errors
+
+
 def import_to_superset(assets_dir, overwrite=True):
     """
     Import transformed assets to Superset STG.
@@ -341,13 +486,36 @@ def import_to_superset(assets_dir, overwrite=True):
 
     # Create ZIP in memory
     zip_buffer = io.BytesIO()
+    
+    # Validate YAML files before creating ZIP
+    print(f"  Validating YAML files...")
+    yaml_errors = []
+    for root, dirs, files in os.walk(assets_dir):
+        for file in files:
+            if file.endswith('.yaml'):
+                file_path = Path(root) / file
+                try:
+                    with open(file_path, 'r') as f:
+                        yaml.safe_load(f)
+                except Exception as e:
+                    yaml_errors.append(f"{file_path.relative_to(assets_dir)}: {str(e)}")
+    
+    if yaml_errors:
+        print(f"\n  ERROR: Found {len(yaml_errors)} invalid YAML files:")
+        for error in yaml_errors:
+            print(f"    - {error}")
+        raise Exception("YAML validation failed - cannot proceed with import")
 
+    # For Superset import, files should be at ZIP root (not in subdirectory)
+    # This works for both API and manual imports
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        # Add all assets to ZIP
+        # Add all assets to ZIP at root level
         for root, dirs, files in os.walk(assets_dir):
             for file in files:
                 file_path = Path(root) / file
-                arcname = file_path.relative_to(assets_dir)
+                rel_path = file_path.relative_to(assets_dir)
+                # Convert to forward slashes for ZIP standard (works on all platforms)
+                arcname = str(rel_path).replace('\\', '/')
                 zipf.write(file_path, arcname)
 
     # Validate ZIP file before sending
@@ -406,41 +574,51 @@ def import_to_superset(assets_dir, overwrite=True):
 
     # Prepare multipart/form-data per Swagger spec
     # Field name must be 'formData' (as specified in Swagger)
-    # Read the ZIP as bytes to ensure proper encoding
+    # IMPORTANT: Pass the file object (buffer), not bytes - matches curl's @file syntax
     zip_buffer.seek(0)
-    zip_bytes = zip_buffer.read()
-    zip_size = len(zip_bytes)
     
-    if zip_size == 0:
+    if len(zip_buffer.read()) == 0:
         raise Exception("ZIP file is empty - cannot import")
+    zip_buffer.seek(0)
+    
+    zip_size = len(zip_buffer.read())
+    zip_buffer.seek(0)
     
     print(f"  ZIP file size: {zip_size} bytes")
     
     # Verify ZIP can be read (check for corruption)
     try:
-        test_zip = zipfile.ZipFile(io.BytesIO(zip_bytes), 'r')
+        test_zip = zipfile.ZipFile(zip_buffer, 'r')
         test_zip.testzip()  # Test ZIP integrity
         test_zip.close()
+        zip_buffer.seek(0)
     except Exception as e:
         raise Exception(f"ZIP file validation failed: {e}")
     
-    # Use bytes in tuple format: (filename, file_bytes, content_type)
-    # This ensures proper multipart encoding that Superset can parse
-    # Note: Using bytes (not buffer) ensures proper encoding
+    # Save ZIP to temporary file (to match curl's @/path/to/file syntax exactly)
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode='wb', suffix='.zip', delete=False) as tmp_zip_file:
+        zip_buffer.seek(0)
+        tmp_zip_file.write(zip_buffer.read())
+        tmp_zip_path = tmp_zip_file.name
+    
+    # Re-open file in read mode for upload
+    zip_file_handle = open(tmp_zip_path, 'rb')
+    
+    # Use real file handle (matches curl's @/path/to/file syntax exactly)
     files = {
-        'formData': (f'{assets_dir.name}.zip', zip_bytes, 'application/zip')
+        'formData': (f'{assets_dir.name}.zip', zip_file_handle, 'application/zip')
     }
-
-    # Include form parameters as form data (per Swagger spec)
-    # The 'overwrite' parameter should be a boolean or string 'true'/'false'
-    # Include password fields as empty JSON strings (per Swagger spec)
+    
+    # Include form parameters (per working curl command - MINIMAL FORMAT)
+    # ONLY overwrite parameter - no password fields (they cause parsing issues)
     data = {
-        'overwrite': 'true',  # String 'true' format
-        'passwords': '{}',
-        'ssh_tunnel_passwords': '{}',
-        'ssh_tunnel_private_key_passwords': '{}',
-        'ssh_tunnel_private_keys': '{}'
+        'overwrite': 'true',  # String format - ONLY this field
     }
+    
+    zip_buffer.seek(0)
+    final_zip_size = len(zip_buffer.read())
+    zip_buffer.seek(0)
     
     print(f"  Request details (per Swagger spec):")
     print(f"    URL: {import_url}")
@@ -449,7 +627,7 @@ def import_to_superset(assets_dir, overwrite=True):
     print(f"    Field name: formData (per Swagger)")
     print(f"    Form parameters: {list(data.keys())}")
     print(f"    Headers: {list(headers.keys())}")
-    print(f"    ZIP size: {zip_size} bytes")
+    print(f"    ZIP size: {final_zip_size} bytes")
     print(f"    Session cookies: {len(session.cookies)} cookie(s)")
 
     # Clear any existing Content-Type from session headers
@@ -465,6 +643,10 @@ def import_to_superset(assets_dir, overwrite=True):
     # Using session maintains cookies (like Postman does automatically)
     print(f"  Sending request (matching Swagger API spec)...")
     response = session.post(import_url, data=data, files=files)
+    
+    # Clean up temporary file
+    zip_file_handle.close()
+    os.unlink(tmp_zip_path)
 
     print(f"  Response status: {response.status_code}")
     print(f"  Response content-type: {response.headers.get('content-type')}")
@@ -553,22 +735,37 @@ def main():
         shutil.rmtree(datasets_dir)
 
     for db_zip in Path('.').glob('stg_database_*.zip'):
-        subprocess.run(['unzip', '-o', str(db_zip), '-d', 'temp_db_unzip'], check=True)
+        # Use Python's zipfile for cross-platform compatibility (works on Windows)
+        temp_unzip_dir = Path('temp_db_unzip')
+        temp_unzip_dir.mkdir(exist_ok=True)
+        
+        with zipfile.ZipFile(db_zip, 'r') as zip_ref:
+            zip_ref.extractall(temp_unzip_dir)
+        
         databases_dir.mkdir(parents=True, exist_ok=True)
         datasets_dir.mkdir(parents=True, exist_ok=True)
 
-        for yaml_file in Path('temp_db_unzip').rglob('databases/*.yaml'):
+        for yaml_file in temp_unzip_dir.rglob('databases/*.yaml'):
             shutil.copy(yaml_file, databases_dir)
-        for yaml_file in Path('temp_db_unzip').rglob('datasets/**/*.yaml'):
-            shutil.copy(yaml_file, datasets_dir)
+        
+        # Preserve directory structure for datasets (e.g., datasets/Amazon_Athena_Iceberg_STG/table.yaml)
+        for yaml_file in temp_unzip_dir.rglob('datasets/**/*.yaml'):
+            # Get relative path from temp_db_unzip
+            rel_path = yaml_file.relative_to(temp_unzip_dir)
+            # Remove 'datasets/' prefix to get database/table structure
+            db_and_table = str(rel_path).split('datasets/', 1)[1]
+            # Preserve the database subdirectory structure
+            dest_path = datasets_dir / db_and_table
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(yaml_file, dest_path)
 
-        shutil.rmtree('temp_db_unzip')
+        shutil.rmtree(temp_unzip_dir)
         db_zip.unlink()
 
     # Summary
     config = load_config()
     database_count = len(list(databases_dir.glob('*.yaml'))) if databases_dir.exists() else 0
-    dataset_count = len(list(datasets_dir.glob('*.yaml'))) if datasets_dir.exists() else 0
+    dataset_count = len(list(datasets_dir.rglob('*.yaml'))) if datasets_dir.exists() else 0
 
     print(f"\nExport Summary:")
     print(f"  Database: {config['stg']['database_id']}")
@@ -585,9 +782,101 @@ def main():
     # Create metadata
     create_metadata()
 
-    # Import to Superset STG
+    # Create ZIP file for download/testing
     stg_dir = Path(__file__).parent.parent / 'superset_assets' / 'stg'
-    import_to_superset(stg_dir, overwrite=True)
+    zip_filename = "deploy_stg.zip"  # Fixed filename for GitHub Actions
+    print(f"\nCreating ZIP file for download: {zip_filename}")
+    
+    zip_buffer = io.BytesIO()
+    
+    # Validate all YAML files before creating ZIP
+    print(f"  Validating YAML files...")
+    validation_errors = []
+    files_validated = 0
+    files_with_errors = 0
+    
+    for root, dirs, files in os.walk(stg_dir):
+        for file in files:
+            if file.endswith('.yaml'):
+                file_path = Path(root) / file
+                is_valid, errors = validate_yaml_file(file_path)
+                files_validated += 1
+                
+                if not is_valid:
+                    files_with_errors += 1
+                    relative_path = file_path.relative_to(stg_dir)
+                    validation_errors.append(f"\n{relative_path}:")
+                    for error in errors:
+                        validation_errors.append(f"  - {error}")
+    
+    print(f"  Validated {files_validated} YAML files")
+    if files_with_errors > 0:
+        print(f"\n  ERROR: {files_with_errors} files failed validation:")
+        for error in validation_errors:
+            print(error)
+        raise Exception(f"YAML validation failed - {files_with_errors} files have errors")
+    
+    print(f"  All YAML files passed validation ✓")
+    
+    # For manual import, files should be at ZIP root (not in subdirectory)
+    # Superset expects: dashboards/, charts/, datasets/, databases/, metadata.yaml at root
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        # Add all assets to ZIP at root level (required for manual import)
+        for root, dirs, files in os.walk(stg_dir):
+            for file in files:
+                file_path = Path(root) / file
+                rel_path = file_path.relative_to(stg_dir)
+                # Use relative path directly (no root prefix) for manual import compatibility
+                # Convert to forward slashes for ZIP standard (works on all platforms)
+                arcname = str(rel_path).replace('\\', '/')
+                zipf.write(file_path, arcname)
+    
+    # Save ZIP file to current directory
+    zip_buffer.seek(0)
+    with open(zip_filename, 'wb') as f:
+        f.write(zip_buffer.getvalue())
+    
+    # Verify ZIP structure
+    zip_buffer.seek(0)
+    zip_test = zipfile.ZipFile(zip_buffer, 'r')
+    zip_contents = zip_test.namelist()
+    zip_test.close()
+    
+    # Check for required directories and files
+    has_metadata = any('metadata.yaml' in f for f in zip_contents)
+    has_dashboards = any('dashboards/' in f for f in zip_contents)
+    has_charts = any('charts/' in f for f in zip_contents)
+    has_datasets = any('datasets/' in f for f in zip_contents)
+    has_databases = any('databases/' in f for f in zip_contents)
+    
+    print(f"✓ Created: {zip_filename}")
+    print(f"  Size: {len(zip_buffer.getvalue())} bytes")
+    print(f"  Total files: {len(zip_contents)}")
+    print(f"  ZIP Structure verification:")
+    print(f"    ✓ metadata.yaml: {has_metadata}")
+    print(f"    ✓ dashboards/: {has_dashboards}")
+    print(f"    ✓ charts/: {has_charts}")
+    print(f"    ✓ datasets/: {has_datasets}")
+    print(f"    ✓ databases/: {has_databases}")
+    
+    if not has_metadata:
+        print(f"  WARNING: metadata.yaml is missing from ZIP!")
+    if not all([has_dashboards, has_charts, has_datasets, has_databases]):
+        print(f"  WARNING: Some required directories are missing from ZIP!")
+    
+    # Show first few files in ZIP for debugging
+    print(f"  Sample files in ZIP (first 5):")
+    for f in sorted(zip_contents)[:5]:
+        print(f"    - {f}")
+    
+    # Import to Superset STG
+    # COMMENTED OUT FOR TESTING - Uncomment to enable import
+    #import_to_superset(stg_dir, overwrite=True)
+    print("\n" + "=" * 60)
+    print("NOTE: Import API call commented out for testing")
+    print("ZIP file not imported to Superset STG")
+    print("To enable import, uncomment the import_to_superset() call above")
+    print("=" * 60)
     
     print("\n" + "=" * 60)
     print("Deployment completed successfully!")
